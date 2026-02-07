@@ -47,7 +47,14 @@ function errMsg(e) {
   if (m.includes("auth/invalid-credential")) return "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
   if (m.includes("auth/email-already-in-use")) return "อีเมลนี้ถูกใช้แล้ว";
   if (m.includes("auth/weak-password")) return "รหัสผ่านสั้นเกินไป (อย่างน้อย 6 ตัว)";
+  if (m.includes("permission-denied")) return "permission-denied: Firestore Rules ยังไม่อนุญาต";
   return m;
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  return d.toLocaleString(undefined, { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
 }
 
 /* =========================
@@ -70,7 +77,6 @@ $("signupBtn").addEventListener("click", async () => {
   const pass = $("pass").value;
   try {
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    // create user profile doc as student by default
     await setDoc(doc(db, "users", cred.user.uid), {
       email,
       name: "",
@@ -85,6 +91,7 @@ $("signupBtn").addEventListener("click", async () => {
 });
 
 $("logoutBtn").addEventListener("click", async () => {
+  stopScanner();
   await signOut(auth);
 });
 
@@ -99,26 +106,12 @@ async function getMyProfile(uid) {
 }
 
 /* =========================
-   3) Teacher navigation
-   ========================= */
-let teacherTab = "users";
-$("navTeacherUsers").addEventListener("click", () => { teacherTab = "users"; renderTeacher(); });
-$("navTeacherClasses").addEventListener("click", () => { teacherTab = "classes"; renderTeacher(); });
-
-/* =========================
-   4) Modal helpers
-   ========================= */
-function openUserModal() { $("userModalBackdrop").style.display = "flex"; $("modalMsg").textContent = ""; }
-function closeUserModal() { $("userModalBackdrop").style.display = "none"; $("modalMsg").textContent = ""; }
-$("closeUserModal").addEventListener("click", closeUserModal);
-$("userModalBackdrop").addEventListener("click", (e) => { if (e.target === $("userModalBackdrop")) closeUserModal(); });
-
-/* =========================
-   5) Teacher - Users (Pretty UI)
+   3) Global caches
    ========================= */
 let cacheClasses = [];
 let cacheUsers = [];
-let editingUid = null;
+let cacheAssignments = [];
+let cacheSubmissions = [];
 
 async function loadClasses() {
   const qs = await getDocs(query(collection(db, "classes"), orderBy("name")));
@@ -128,11 +121,58 @@ async function loadUsers() {
   const qs = await getDocs(query(collection(db, "users"), orderBy("role")));
   cacheUsers = qs.docs.map(d => ({ uid: d.id, ...d.data() }));
 }
+async function loadAssignments() {
+  const qs = await getDocs(query(collection(db, "assignments"), orderBy("createdAt", "desc")));
+  cacheAssignments = qs.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+async function loadSubmissions() {
+  const qs = await getDocs(query(collection(db, "submissions"), orderBy("submittedAt", "desc")));
+  cacheSubmissions = qs.docs.map(d => ({ id: d.id, ...d.data() }));
+}
 
 function classNameOf(id) {
   const c = cacheClasses.find(x => x.id === id);
   return c ? `${c.name} (${c.id})` : (id || "-");
 }
+
+function getAssignmentsForClass(classId) {
+  return cacheAssignments.filter(a => a.classId === classId);
+}
+function findSubmission(assignmentId, studentUid) {
+  return cacheSubmissions.find(s => s.assignmentId === assignmentId && s.studentUid === studentUid) || null;
+}
+async function upsertSubmission({ assignmentId, studentUid, classId, method, scannedBy }) {
+  const id = `${assignmentId}_${studentUid}`;
+  await setDoc(doc(db, "submissions", id), {
+    assignmentId,
+    studentUid,
+    classId,
+    status: "SUBMITTED",
+    submittedAt: Date.now(),
+    method,
+    scannedBy: scannedBy || null
+  }, { merge: true });
+}
+
+/* =========================
+   4) Teacher navigation
+   ========================= */
+let teacherTab = "dashboard";
+
+$("navTeacherDashboard").addEventListener("click", () => { stopScanner(); teacherTab = "dashboard"; renderTeacher(); });
+$("navTeacherTasks").addEventListener("click", () => { stopScanner(); teacherTab = "tasks"; renderTeacher(); });
+$("navTeacherQR").addEventListener("click", () => { stopScanner(); teacherTab = "qr"; renderTeacher(); });
+$("navTeacherScan").addEventListener("click", () => { teacherTab = "scan"; renderTeacher(); });
+$("navTeacherUsers").addEventListener("click", () => { stopScanner(); teacherTab = "users"; renderTeacher(); });
+$("navTeacherClasses").addEventListener("click", () => { stopScanner(); teacherTab = "classes"; renderTeacher(); });
+
+/* =========================
+   5) Modal helpers (Users)
+   ========================= */
+function openUserModal() { $("userModalBackdrop").style.display = "flex"; $("modalMsg").textContent = ""; }
+function closeUserModal() { $("userModalBackdrop").style.display = "none"; $("modalMsg").textContent = ""; }
+$("closeUserModal").addEventListener("click", closeUserModal);
+$("userModalBackdrop").addEventListener("click", (e) => { if (e.target === $("userModalBackdrop")) closeUserModal(); });
 
 function fillClassDropdown(selectEl, value) {
   selectEl.innerHTML = `<option value="">-- ไม่ระบุ --</option>` + cacheClasses.map(c => (
@@ -141,41 +181,48 @@ function fillClassDropdown(selectEl, value) {
   selectEl.value = value || "";
 }
 
+/* =========================
+   6) Teacher - Quick summary
+   ========================= */
 function renderTeacherQuick(me) {
   const totalUsers = cacheUsers.length;
   const teachers = cacheUsers.filter(u => u.role === "teacher").length;
   const students = cacheUsers.filter(u => u.role === "student").length;
+
   $("teacherQuick").innerHTML = `
     <div class="row sp">
       <div class="badge"><span class="dot ok"></span>Teachers: <b>${teachers}</b></div>
       <div class="badge"><span class="dot warn"></span>Students: <b>${students}</b></div>
-      <div class="badge"><span class="dot"></span>Total: <b>${totalUsers}</b></div>
+      <div class="badge"><span class="dot"></span>Total users: <b>${totalUsers}</b></div>
     </div>
     <div class="hr"></div>
-    <div class="muted tiny">ล็อกอินเป็น: <b>${me.email || "-"}</b> • UID: ${me.uid}</div>
+    <div class="muted tiny">
+      ล็อกอินเป็น: <b>${me.email || "-"}</b><br>
+      uid: ${me.uid}
+    </div>
   `;
 }
 
+/* =========================
+   7) Teacher - Users (Pretty UI)
+   ========================= */
 function renderUsersTable(me) {
-  const rows = cacheUsers
-    .slice()
-    .sort((a,b)=>{
-      if (a.role !== b.role) return a.role === "teacher" ? -1 : 1;
-      return (a.email||"").localeCompare(b.email||"");
-    });
+  const rows = cacheUsers.slice().sort((a,b)=>{
+    if (a.role !== b.role) return a.role === "teacher" ? -1 : 1;
+    return (a.email||"").localeCompare(b.email||"");
+  });
 
   $("teacherPanel").innerHTML = `
     <div class="row sp">
       <h3>Users</h3>
       <div class="row">
         <button id="refreshUsersBtn" class="secondary">รีเฟรช</button>
-        <button id="openAddUserBtn">Add User (เฉพาะโปรไฟล์)</button>
       </div>
     </div>
 
     <div class="toast tiny">
-      <b>การสร้างบัญชี (Auth):</b> นักเรียนสมัครเองด้วย Email/Password แล้วครูมาแก้ role/class/studentNo ที่นี่<br>
-      ปุ่ม Add User ด้านบนจะ “สร้างโปรไฟล์ user doc” เท่านั้น (กรณีอยากเตรียมข้อมูลไว้ก่อน)
+      นักเรียนสมัครเอง (Auth) แล้วครูมาแก้ role/class/studentNo ที่นี่<br>
+      * ปุ่มลบ = ลบ <b>user doc</b> เท่านั้น (ไม่ลบบัญชี Auth)
     </div>
 
     <div class="hr"></div>
@@ -187,18 +234,16 @@ function renderUsersTable(me) {
             <th style="min-width:220px">Email</th>
             <th style="min-width:90px">Role</th>
             <th style="min-width:180px">Name</th>
-            <th style="min-width:200px">Class</th>
+            <th style="min-width:220px">Class</th>
             <th class="right" style="min-width:110px">studentNo</th>
-            <th class="right" style="min-width:140px">Action</th>
+            <th class="right" style="min-width:120px">Action</th>
           </tr>
         </thead>
         <tbody>
           ${rows.map(u => `
             <tr>
               <td><b>${u.email || "-"}</b><div class="muted tiny">uid: ${u.uid}</div></td>
-              <td>
-                <span class="badge"><span class="dot ${u.role==="teacher"?"ok":"warn"}"></span>${u.role}</span>
-              </td>
+              <td><span class="badge"><span class="dot ${u.role==="teacher"?"ok":"warn"}"></span>${u.role}</span></td>
               <td>${u.name || "-"}</td>
               <td>${classNameOf(u.classId)}</td>
               <td class="right">${u.role==="student" ? (u.studentNo ?? "-") : "-"}</td>
@@ -206,20 +251,17 @@ function renderUsersTable(me) {
                 <button class="secondary" data-edit="${u.uid}">Edit</button>
               </td>
             </tr>
-          `).join("")}
+          `).join("") || `<tr><td colspan="6" class="muted">ยังไม่มีผู้ใช้</td></tr>`}
         </tbody>
       </table>
     </div>
   `;
 
   $("refreshUsersBtn").addEventListener("click", async ()=> {
-    await loadClasses();
-    await loadUsers();
+    await loadClasses(); await loadUsers();
     renderTeacherQuick(me);
     renderUsersTable(me);
   });
-
-  $("openAddUserBtn").addEventListener("click", ()=> openUserEditor(me, null));
 
   document.querySelectorAll("[data-edit]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -231,22 +273,19 @@ function renderUsersTable(me) {
 }
 
 function openUserEditor(me, user) {
-  editingUid = user?.uid || null;
+  if (!user) return;
 
-  $("userModalTitle").textContent = user ? "Edit User" : "Add User (Profile only)";
-  $("userModalSub").textContent = user
-    ? "แก้ไขข้อมูลผู้ใช้ใน Firestore"
-    : "สร้าง users/{uid} แบบ manual (กรณีอยากเตรียม doc)";
+  $("userModalTitle").textContent = "Edit User";
+  $("userModalSub").textContent = "แก้ไขข้อมูลผู้ใช้ใน Firestore";
+  $("m_uid").value = user.uid || "";
+  $("m_email").value = user.email || "";
+  $("m_name").value = user.name || "";
+  $("m_role").value = user.role || "student";
+  $("m_studentNo").value = (user.studentNo ?? "");
 
-  $("m_uid").value = user?.uid || "(จะใส่เอง)";
-  $("m_email").value = user?.email || "";
-  $("m_name").value = user?.name || "";
-  $("m_role").value = user?.role || "student";
-  $("m_studentNo").value = (user?.studentNo ?? "");
+  fillClassDropdown($("m_classId"), user.classId || "");
+  $("deleteUserBtn").style.display = "";
 
-  fillClassDropdown($("m_classId"), user?.classId || "");
-
-  $("deleteUserBtn").style.display = user ? "" : "none";
   openUserModal();
 
   $("saveUserBtn").onclick = async () => {
@@ -262,48 +301,29 @@ function openUserEditor(me, user) {
         if (studentNoRaw !== "") {
           const n = Number(studentNoRaw);
           if (!Number.isFinite(n) || n < 1) throw new Error("studentNo ต้องเป็นตัวเลข >= 1");
+          // duplicate check in same class
+          if (classId) {
+            const dup = cacheUsers.some(u =>
+              u.uid !== user.uid && u.role==="student" && u.classId===classId && u.studentNo===n
+            );
+            if (dup) throw new Error("เลขที่ซ้ำในห้องเดียวกัน");
+          }
           studentNo = n;
         }
       }
 
-      if (user) {
-        // edit existing
-        const ref = doc(db, "users", user.uid);
-
-        // optional duplicate check (client-side)
-        if (role === "student" && classId && studentNo != null) {
-          const dup = cacheUsers.some(u =>
-            u.uid !== user.uid && u.role==="student" && u.classId===classId && u.studentNo===studentNo
-          );
-          if (dup) throw new Error("เลขที่ซ้ำในห้องเดียวกัน");
-        }
-
-        await updateDoc(ref, {
-          name,
-          role,
-          classId,
-          studentNo: role==="student" ? studentNo : null
-        });
-      } else {
-        // create profile doc only (needs uid input)
-        const uid = prompt("ใส่ UID ที่ต้องการสร้างโปรไฟล์ (เช่น UID จาก Auth)");
-        if (!uid) return;
-
-        await setDoc(doc(db, "users", uid), {
-          email: $("m_email").value.trim(),
-          name,
-          role,
-          classId,
-          studentNo: role==="student" ? studentNo : null,
-          createdAt: Date.now()
-        }, { merge: true });
-      }
+      await updateDoc(doc(db, "users", user.uid), {
+        name,
+        role,
+        classId,
+        studentNo: role==="student" ? studentNo : null
+      });
 
       await loadUsers();
       renderTeacherQuick(me);
       renderUsersTable(me);
       $("modalMsg").textContent = "✅ บันทึกแล้ว";
-      setTimeout(closeUserModal, 400);
+      setTimeout(closeUserModal, 350);
     } catch (e) {
       $("modalMsg").textContent = "❌ " + errMsg(e);
     }
@@ -312,16 +332,15 @@ function openUserEditor(me, user) {
   $("deleteUserBtn").onclick = async () => {
     $("modalMsg").textContent = "";
     try {
-      if (!user) return;
       if (user.uid === me.uid) throw new Error("ลบบัญชีที่กำลังล็อกอินไม่ได้");
-      if (!confirm(`ยืนยันลบ user doc: ${user.email || user.uid} ?\n(หมายเหตุ: ไม่ได้ลบบัญชี Auth)`)) return;
+      if (!confirm(`ยืนยันลบ user doc: ${user.email || user.uid} ?\n(ไม่ลบบัญชี Auth)`)) return;
 
       await deleteDoc(doc(db, "users", user.uid));
       await loadUsers();
       renderTeacherQuick(me);
       renderUsersTable(me);
       $("modalMsg").textContent = "✅ ลบแล้ว";
-      setTimeout(closeUserModal, 400);
+      setTimeout(closeUserModal, 350);
     } catch (e) {
       $("modalMsg").textContent = "❌ " + errMsg(e);
     }
@@ -329,7 +348,7 @@ function openUserEditor(me, user) {
 }
 
 /* =========================
-   6) Teacher - Classes
+   8) Teacher - Classes
    ========================= */
 function renderClasses(me) {
   $("teacherPanel").innerHTML = `
@@ -379,44 +398,522 @@ function renderClasses(me) {
       const name = $("c_name").value.trim();
       const note = $("c_note").value.trim();
       if (!name) throw new Error("กรุณาใส่ชื่อห้อง");
+
       const ref = await addDoc(collection(db, "classes"), { name, note, createdAt: Date.now() });
-      // make id readable by copying auto id to a field not necessary; we just reload
-      await loadClasses();
+
       $("c_name").value = "";
       $("c_note").value = "";
+      await loadClasses();
       renderClasses(me);
-      alert("เพิ่ม class แล้ว (id: "+ref.id+")");
-    }catch(e){
-      alert("❌ "+errMsg(e));
+      alert("✅ เพิ่ม class แล้ว (id: "+ref.id+")");
+    } catch(e) {
+      alert("❌ " + errMsg(e));
     }
   });
 }
 
 /* =========================
-   7) Student view
+   9) Teacher - Tasks
    ========================= */
-function renderStudent(me) {
-  $("studentPanel").innerHTML = `
-    <div class="toast">
-      <div><b>Email:</b> ${me.email || "-"}</div>
-      <div><b>Role:</b> ${me.role}</div>
-      <div><b>Class:</b> ${me.classId || "-"}</div>
-      <div><b>studentNo:</b> ${me.studentNo ?? "-"}</div>
-    </div>
+async function renderTeacherTasks(me) {
+  await loadAssignments();
+
+  const classOptions = cacheClasses.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+
+  $("teacherPanel").innerHTML = `
+    <h3>Tasks / Assignments</h3>
+    <div class="toast tiny">สร้างงาน → ครูสแกน QR เพื่อบันทึกส่ง (นักเรียนอ่านอย่างเดียว)</div>
     <div class="hr"></div>
-    <div class="muted tiny">
-      ถ้า Class ยังว่าง ให้แจ้งครูเพื่อ assign ห้อง/เลขที่ในหน้า Users
+
+    <h3>สร้างงานใหม่</h3>
+    <div class="two">
+      <div>
+        <label>Class</label>
+        <select id="t_classId">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+      </div>
+      <div>
+        <label>กำหนดส่ง</label>
+        <input id="t_due" type="datetime-local"/>
+      </div>
+    </div>
+
+    <label>ชื่องาน</label>
+    <input id="t_title" placeholder="เช่น การบ้านวิทย์: สรุปเรื่องเมฆ" />
+
+    <label>รายละเอียด</label>
+    <textarea id="t_detail" placeholder="รายละเอียดงาน / วิธีทำ / เกณฑ์ตรวจ"></textarea>
+
+    <div class="row" style="margin-top:10px">
+      <button id="createTaskBtn">สร้างงาน</button>
+      <button id="reloadTasksBtn" class="secondary">รีเฟรช</button>
+    </div>
+
+    <div class="hr"></div>
+    <h3>งานทั้งหมด</h3>
+    <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
+      <table>
+        <thead>
+          <tr>
+            <th style="min-width:260px">งาน</th>
+            <th style="min-width:200px">Class</th>
+            <th style="min-width:180px">Due</th>
+            <th class="right" style="min-width:120px">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${cacheAssignments.map(a => `
+            <tr>
+              <td><b>${a.title}</b><div class="muted tiny">${a.detail || ""}</div></td>
+              <td>${classNameOf(a.classId)}</td>
+              <td>${fmtDateTime(a.dueAt)}</td>
+              <td class="right">
+                <button class="danger" data-del-task="${a.id}">ลบ</button>
+              </td>
+            </tr>
+          `).join("") || `<tr><td colspan="4" class="muted">ยังไม่มีงาน</td></tr>`}
+        </tbody>
+      </table>
     </div>
   `;
-  $("studentStatus").innerHTML = `
-    <div class="badge"><span class="dot warn"></span>รอครูกำหนดข้อมูล (ถ้ายังไม่เห็น class)</div>
+
+  $("reloadTasksBtn").addEventListener("click", async ()=>{
+    await loadAssignments();
+    await renderTeacherTasks(me);
+  });
+
+  $("createTaskBtn").addEventListener("click", async ()=>{
+    try{
+      const classId = $("t_classId").value;
+      const dueLocal = $("t_due").value;
+      const title = $("t_title").value.trim();
+      const detail = $("t_detail").value.trim();
+
+      if (!classId) throw new Error("กรุณาเลือก Class");
+      if (!dueLocal) throw new Error("กรุณาเลือกกำหนดส่ง");
+      if (!title) throw new Error("กรุณาใส่ชื่องาน");
+
+      const dueAt = new Date(dueLocal).getTime();
+
+      await addDoc(collection(db, "assignments"), {
+        classId,
+        title,
+        detail,
+        dueAt,
+        createdAt: Date.now(),
+        createdBy: me.uid
+      });
+
+      $("t_title").value = "";
+      $("t_detail").value = "";
+      await loadAssignments();
+      await renderTeacherTasks(me);
+      alert("✅ สร้างงานแล้ว");
+    } catch(e) {
+      alert("❌ " + errMsg(e));
+    }
+  });
+
+  document.querySelectorAll("[data-del-task]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const id = btn.getAttribute("data-del-task");
+      if (!confirm("ยืนยันลบงานนี้?")) return;
+      await deleteDoc(doc(db, "assignments", id));
+      await loadAssignments();
+      await renderTeacherTasks(me);
+    });
+  });
+}
+
+/* =========================
+   10) Teacher - Dashboard
+   ========================= */
+async function renderTeacherDashboard(me) {
+  await loadAssignments();
+  await loadSubmissions();
+  await loadUsers();
+  await loadClasses();
+
+  const byClass = cacheClasses.map(c=>{
+    const assigns = getAssignmentsForClass(c.id);
+    const students = cacheUsers.filter(u=>u.role==="student" && u.classId===c.id);
+    const total = assigns.length * students.length;
+
+    let submitted = 0;
+    for (const a of assigns) {
+      for (const st of students) {
+        if (findSubmission(a.id, st.uid)) submitted++;
+      }
+    }
+    const pending = total - submitted;
+    const pct = total ? Math.round((submitted/total)*100) : 0;
+    return { classId:c.id, name:c.name, total, submitted, pending, pct };
+  });
+
+  $("teacherPanel").innerHTML = `
+    <h3>Dashboard</h3>
+    <div class="toast tiny">ภาพรวมการส่งงาน (Assignments x Students) ต่อห้อง</div>
+    <div class="hr"></div>
+
+    <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
+      <table>
+        <thead>
+          <tr>
+            <th>Class</th>
+            <th class="right">ส่งแล้ว</th>
+            <th class="right">ค้าง</th>
+            <th class="right">Progress</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${byClass.map(r=>`
+            <tr>
+              <td><b>${r.name}</b><div class="muted tiny">${r.classId}</div></td>
+              <td class="right">${r.submitted}/${r.total}</td>
+              <td class="right"><b style="color:${r.pending>0?'#ffcc66':'#44d19d'}">${r.pending}</b></td>
+              <td class="right"><b>${r.pct}%</b></td>
+            </tr>
+          `).join("") || `<tr><td colspan="4" class="muted">ยังไม่มีข้อมูล</td></tr>`}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
 /* =========================
-   8) Teacher render
+   11) Teacher - QR students
+   ========================= */
+async function renderTeacherQR(me) {
+  await loadUsers();
+  await loadClasses();
+
+  const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+
+  $("teacherPanel").innerHTML = `
+    <h3>QR นักเรียน</h3>
+    <div class="toast tiny">พิมพ์ QR แปะสมุด (payload = {type:"STUDENT", uid:"..."})</div>
+
+    <label>เลือก Class</label>
+    <select id="qr_class">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+
+    <div class="hr"></div>
+    <div id="qrList" style="display:flex;gap:14px;flex-wrap:wrap"></div>
+    <div class="hr"></div>
+    <button id="printQR" class="secondary">พิมพ์หน้านี้</button>
+  `;
+
+  const renderList = (classId) => {
+    const list = $("qrList");
+    list.innerHTML = "";
+    const students = cacheUsers
+      .filter(u=>u.role==="student" && u.classId===classId)
+      .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
+
+    students.forEach(st=>{
+      const box = document.createElement("div");
+      box.style.width="220px";
+      box.style.padding="12px";
+      box.style.border="1px solid var(--line)";
+      box.style.borderRadius="16px";
+      box.style.background="#0c152b";
+      box.innerHTML = `
+        <div style="font-weight:800">${st.studentNo ?? "-"} . ${st.name || "-"}</div>
+        <div class="muted tiny">${st.email || ""}</div>
+        <div id="qr_${st.uid}" style="margin-top:10px"></div>
+      `;
+      list.appendChild(box);
+
+      const payload = JSON.stringify({ type:"STUDENT", uid: st.uid });
+      // qrcodejs attaches to window.QRCode
+      new window.QRCode(document.getElementById(`qr_${st.uid}`), { text: payload, width: 140, height: 140 });
+    });
+  };
+
+  const sel = $("qr_class");
+  if (sel.value) renderList(sel.value);
+  sel.addEventListener("change", ()=>renderList(sel.value));
+
+  $("printQR").addEventListener("click", ()=>window.print());
+}
+
+/* =========================
+   12) Teacher - QR Scanner
+   ========================= */
+let scanner = { running:false, stream:null, raf:null, assignmentId:null, classId:null };
+
+function stopScanner() {
+  scanner.running = false;
+  if (scanner.raf) cancelAnimationFrame(scanner.raf);
+  scanner.raf = null;
+  if (scanner.stream) {
+    scanner.stream.getTracks().forEach(t=>t.stop());
+    scanner.stream = null;
+  }
+}
+
+async function renderTeacherScan(me) {
+  await loadAssignments();
+  await loadSubmissions();
+  await loadUsers();
+  await loadClasses();
+
+  const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+
+  $("teacherPanel").innerHTML = `
+    <h3>สแกน QR เพื่อบันทึกการส่งงาน</h3>
+    <div class="toast tiny">ขั้นตอน: เลือก Class → เลือกงาน → เริ่มสแกน → สแกน QR จากสมุด</div>
+
+    <div class="two">
+      <div>
+        <label>Class</label>
+        <select id="scan_class">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+      </div>
+      <div>
+        <label>เลือกงาน</label>
+        <select id="scan_assignment"><option value="">-- เลือกงาน --</option></select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="startScanBtn">เริ่มสแกน</button>
+      <button id="stopScanBtn" class="secondary" disabled>หยุดสแกน</button>
+      <button id="reloadScanBtn" class="secondary">รีเฟรช</button>
+    </div>
+
+    <div class="hr"></div>
+    <video id="video" playsinline></video>
+    <canvas id="canvas" style="display:none"></canvas>
+
+    <div class="hr"></div>
+    <div id="scanResult" class="toast tiny">ยังไม่ได้เริ่มสแกน</div>
+  `;
+
+  const classSel = $("scan_class");
+  const assignmentSel = $("scan_assignment");
+
+  const fillAssignments = (classId) => {
+    const assigns = getAssignmentsForClass(classId);
+    assignmentSel.innerHTML =
+      `<option value="">-- เลือกงาน --</option>` +
+      assigns.map(a => `<option value="${a.id}">${a.title} (Due ${fmtDateTime(a.dueAt)})</option>`).join("");
+  };
+
+  if (classSel.value) fillAssignments(classSel.value);
+  classSel.addEventListener("change", ()=>fillAssignments(classSel.value));
+
+  $("reloadScanBtn").addEventListener("click", async ()=>{
+    await loadAssignments(); await loadSubmissions(); await loadUsers();
+    renderTeacherScan(me);
+  });
+
+  $("startScanBtn").addEventListener("click", async ()=>{
+    const classId = classSel.value;
+    const assignmentId = assignmentSel.value;
+    if (!classId) return alert("เลือก Class ก่อน");
+    if (!assignmentId) return alert("เลือกงานก่อน");
+
+    scanner.classId = classId;
+    scanner.assignmentId = assignmentId;
+
+    await startScanner(me);
+  });
+
+  $("stopScanBtn").addEventListener("click", ()=>{
+    stopScanner();
+    $("stopScanBtn").disabled = true;
+    $("startScanBtn").disabled = false;
+    $("scanResult").textContent = "หยุดสแกนแล้ว";
+  });
+}
+
+async function startScanner(me) {
+  if (scanner.running) return;
+
+  const video = $("video");
+  const canvas = $("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:"environment" }, audio:false });
+    scanner.stream = stream;
+    video.srcObject = stream;
+    await video.play();
+
+    scanner.running = true;
+    $("startScanBtn").disabled = true;
+    $("stopScanBtn").disabled = false;
+
+    const tick = async () => {
+      if (!scanner.running) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+        const code = window.jsQR(img.data, img.width, img.height, { inversionAttempts:"dontInvert" });
+
+        if (code?.data) {
+          let obj = null;
+          try { obj = JSON.parse(code.data); } catch {}
+
+          if (obj?.type === "STUDENT" && obj.uid) {
+            const student = cacheUsers.find(u=>u.uid===obj.uid && u.role==="student" && u.classId===scanner.classId);
+            if (!student) {
+              $("scanResult").textContent = "⚠️ QR ถูกต้อง แต่ไม่ใช่นักเรียนในห้องที่เลือก";
+            } else {
+              await upsertSubmission({
+                assignmentId: scanner.assignmentId,
+                studentUid: student.uid,
+                classId: scanner.classId,
+                method: "QR",
+                scannedBy: me.uid
+              });
+              await loadSubmissions();
+              $("scanResult").innerHTML = `✅ บันทึกส่งแล้ว: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b> เวลา ${fmtDateTime(Date.now())}`;
+            }
+          } else {
+            $("scanResult").textContent = "⚠️ QR ไม่ถูกต้องสำหรับระบบนี้";
+          }
+        }
+      }
+      scanner.raf = requestAnimationFrame(tick);
+    };
+
+    scanner.raf = requestAnimationFrame(tick);
+
+  } catch (e) {
+    alert("เปิดกล้องไม่สำเร็จ: อนุญาต Permission หรือใช้ HTTPS");
+    stopScanner();
+    $("stopScanBtn").disabled = true;
+    $("startScanBtn").disabled = false;
+  }
+}
+
+/* =========================
+   13) Student (Read-only tasks + progress)
+   ========================= */
+function isLate(a) {
+  return Date.now() > (a.dueAt || 0);
+}
+function statusForStudent(assignment, studentUid) {
+  const sub = cacheSubmissions.find(s => s.assignmentId === assignment.id && s.studentUid === studentUid);
+  if (sub) {
+    return { label:"ส่งแล้ว", cls:"ok", detail:`QR • ${fmtDateTime(sub.submittedAt)}` };
+  }
+  if (isLate(assignment)) {
+    return { label:"ค้าง (เลยกำหนด)", cls:"bad", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
+  }
+  return { label:"ค้าง", cls:"warn", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
+}
+function renderStudentProgressBar(done, total) {
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  return `
+    <div class="row sp">
+      <div class="badge"><span class="dot ok"></span>ส่งแล้ว: <b>${done}</b></div>
+      <div class="badge"><span class="dot warn"></span>ค้าง: <b>${total - done}</b></div>
+      <div class="badge"><span class="dot"></span>รวม: <b>${total}</b></div>
+    </div>
+    <div class="hr"></div>
+    <div class="toast">
+      <div class="muted tiny">ความคืบหน้า</div>
+      <div style="height:10px;background:#0c152b;border:1px solid var(--line);border-radius:999px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#44d19d,#2a5bd7)"></div>
+      </div>
+      <div class="muted tiny" style="margin-top:8px">${pct}% ของงานทั้งหมด</div>
+    </div>
+  `;
+}
+async function renderStudent(me) {
+  await loadAssignments();
+  await loadSubmissions();
+  await loadClasses();
+
+  const classId = me.classId || "";
+  const cls = cacheClasses.find(c => c.id === classId);
+
+  if (!classId) {
+    $("studentPanel").innerHTML = `
+      <div class="toast">
+        <div><b>Email:</b> ${me.email || "-"}</div>
+        <div><b>Role:</b> ${me.role}</div>
+        <div><b>Class:</b> -</div>
+        <div><b>studentNo:</b> ${me.studentNo ?? "-"}</div>
+      </div>
+      <div class="hr"></div>
+      <div class="badge"><span class="dot warn"></span>ยังไม่ได้กำหนดห้องเรียน กรุณาแจ้งครูให้ assign</div>
+    `;
+    $("studentStatus").innerHTML = `
+      <div class="toast tiny"><b>หมายเหตุ:</b> ระบบนี้ “ครูสแกน QR อย่างเดียว” นักเรียนไม่สามารถกดส่งเอง</div>
+    `;
+    return;
+  }
+
+  const assignments = cacheAssignments
+    .filter(a => a.classId === classId)
+    .sort((a,b)=> (a.dueAt||0) - (b.dueAt||0));
+
+  let done = 0;
+  for (const a of assignments) {
+    if (cacheSubmissions.find(s => s.assignmentId === a.id && s.studentUid === me.uid)) done++;
+  }
+
+  const rows = assignments.map(a => {
+    const st = statusForStudent(a, me.uid);
+    return `
+      <tr>
+        <td>
+          <b>${a.title}</b>
+          <div class="muted tiny">${a.detail || ""}</div>
+        </td>
+        <td>
+          <span class="badge"><span class="dot ${st.cls}"></span>${st.label}</span>
+          <div class="muted tiny">${st.detail}</div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+
+  $("studentPanel").innerHTML = `
+    <div class="row sp">
+      <div>
+        <div class="muted tiny">ห้อง: <b>${cls ? cls.name : classId}</b> • เลขที่: <b>${me.studentNo ?? "-"}</b></div>
+      </div>
+      <div class="badge"><span class="dot"></span>Read-only</div>
+    </div>
+
+    <div class="hr"></div>
+
+    <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
+      <table>
+        <thead>
+          <tr>
+            <th style="min-width:260px">งาน</th>
+            <th style="min-width:200px">สถานะ</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || `<tr><td colspan="2" class="muted">ยังไม่มีงานในห้องนี้</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  $("studentStatus").innerHTML = `
+    ${renderStudentProgressBar(done, assignments.length)}
+    <div class="hr"></div>
+    <div class="toast tiny">
+      <b>การส่งงาน:</b> ครูจะบันทึก “ส่งแล้ว” เมื่อสแกน QR จากสมุด/หน้าปะของนักเรียน
+    </div>
+  `;
+}
+
+/* =========================
+   14) Teacher main render
    ========================= */
 async function renderTeacher() {
+  stopScanner(); // กันกล้องค้างเวลาเปลี่ยนแท็บ
+
   const u = auth.currentUser;
   if (!u) return;
 
@@ -427,14 +924,20 @@ async function renderTeacher() {
   await loadUsers();
   renderTeacherQuick(me);
 
+  if (teacherTab === "dashboard") await renderTeacherDashboard(me);
+  if (teacherTab === "tasks") await renderTeacherTasks(me);
+  if (teacherTab === "qr") await renderTeacherQR(me);
+  if (teacherTab === "scan") await renderTeacherScan(me);
   if (teacherTab === "users") renderUsersTable(me);
   if (teacherTab === "classes") renderClasses(me);
 }
 
 /* =========================
-   9) App boot
+   15) App boot
    ========================= */
 onAuthStateChanged(auth, async (user) => {
+  stopScanner();
+
   if (!user) {
     $("logoutBtn").style.display = "none";
     setWho("ยังไม่ได้ล็อกอิน");
@@ -465,6 +968,8 @@ onAuthStateChanged(auth, async (user) => {
     await renderTeacher();
   } else {
     showOnly("student");
-    renderStudent(me2);
+    await renderStudent(me2);
   }
 });
+
+window.addEventListener("beforeunload", ()=> stopScanner());
