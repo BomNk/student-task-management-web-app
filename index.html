@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Student Task Management (Firebase + GitHub Pages)</title>
+  <title>Student Task Management</title>
 
   <style>
     :root{--bg:#0b1220;--card:#111a2e;--muted:#8aa0c7;--text:#e8f0ff;--line:#253355;--ok:#44d19d;--warn:#ffcc66;--bad:#ff6b6b;--btn:#2a5bd7}
@@ -44,11 +44,8 @@
     @media(max-width:900px){.two{grid-template-columns:1fr}}
     video{width:100%;border-radius:16px;border:1px solid var(--line);background:#000}
 
-    /* modal */
-    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
-    .modal{max-width:760px;width:100%;background:rgba(17,26,46,.98);border:1px solid var(--line);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.5);padding:14px}
-    .modal .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-    .xbtn{background:#1a2a4b;border:1px solid var(--line);color:#dbe7ff;padding:8px 10px;border-radius:12px}
+    details summary{user-select:none}
+    details{border:1px solid var(--line);border-radius:14px;padding:10px;background:#0c152b}
   </style>
 </head>
 
@@ -86,7 +83,7 @@
 
         <div class="hr"></div>
         <div class="toast tiny">
-          ระบบนี้ “ครูสแกน QR อย่างเดียว” นักเรียนไม่สามารถกดส่งเองได้<br>
+          ระบบนี้ “ครูสแกน/Manual บันทึกส่ง” นักเรียนไม่สามารถกดส่งเองได้<br>
           นักเรียนสมัครแล้ว ครูมา assign ห้อง/เลขที่ ในหน้า Users
         </div>
 
@@ -112,7 +109,7 @@
             <button id="navTeacherDashboard" class="secondary">Dashboard</button>
             <button id="navTeacherTasks" class="secondary">Tasks</button>
             <button id="navTeacherQR" class="secondary">QR นักเรียน</button>
-            <button id="navTeacherScan" class="secondary">สแกนส่งงาน</button>
+            <button id="navTeacherScan" class="secondary">ส่งงาน</button>
             <button id="navTeacherUsers" class="secondary">Users</button>
             <button id="navTeacherClasses" class="secondary">Classes</button>
           </div>
@@ -129,7 +126,7 @@
     <!-- STUDENT -->
     <section id="viewStudent" style="display:none" class="grid">
       <div class="card">
-        <h2>งานของฉัน (Read-only)</h2>
+        <h2>Dashboard ของฉัน</h2>
         <div id="studentPanel"></div>
       </div>
       <div class="card">
@@ -139,67 +136,9 @@
     </section>
   </div>
 
-  <!-- Modal for Edit User -->
-  <div id="userModalBackdrop" class="modal-backdrop">
-    <div class="modal">
-      <div class="head">
-        <div>
-          <div style="font-weight:800" id="userModalTitle">Edit User</div>
-          <div class="muted tiny" id="userModalSub">จัดการข้อมูลผู้ใช้</div>
-        </div>
-        <button id="closeUserModal" class="xbtn">ปิด</button>
-      </div>
-
-      <div class="hr"></div>
-
-      <div class="two">
-        <div>
-          <label>UID (อ่านอย่างเดียว)</label>
-          <input id="m_uid" disabled />
-        </div>
-        <div>
-          <label>Email (อ่านอย่างเดียว)</label>
-          <input id="m_email" disabled />
-        </div>
-      </div>
-
-      <div class="two">
-        <div>
-          <label>ชื่อ</label>
-          <input id="m_name" placeholder="เช่น นักเรียน เอ" />
-        </div>
-        <div>
-          <label>Role</label>
-          <select id="m_role">
-            <option value="student">student</option>
-            <option value="teacher">teacher</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="two">
-        <div>
-          <label>Class</label>
-          <select id="m_classId"></select>
-        </div>
-        <div>
-          <label>เลขที่ (studentNo)</label>
-          <input id="m_studentNo" type="number" min="1" placeholder="เช่น 10" />
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:12px">
-        <button id="saveUserBtn">บันทึก</button>
-        <button id="deleteUserBtn" class="danger">ลบ user doc</button>
-      </div>
-
-      <div id="modalMsg" class="muted tiny" style="margin-top:10px"></div>
-    </div>
-  </div>
-
   <!-- QR generate -->
   <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-  <!-- QR scan -->
+  <!-- QR scan (camera) -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
   <script type="module" src="./app.js"></script>
