@@ -9,7 +9,7 @@ import {
   getFirestore,
   doc, getDoc, setDoc, updateDoc, deleteDoc,
   collection, addDoc, getDocs,
-  query, orderBy
+  query, orderBy, where
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
 /* =========================
@@ -17,7 +17,7 @@ import {
    ========================= */
 const firebaseConfig = {
   // PASTE_HERE
-  apiKey: "AIzaSyCwRebNtj7kO5HjT6lTrd6TB4RiF2GaXrQ",
+  /apiKey: "AIzaSyCwRebNtj7kO5HjT6lTrd6TB4RiF2GaXrQ",
   authDomain: "student-task-managment-10db2.firebaseapp.com",
   projectId: "student-task-managment-10db2",
   storageBucket: "student-task-managment-10db2.firebasestorage.app",
@@ -37,6 +37,7 @@ const views = {
   teacher: $("viewTeacher"),
   student: $("viewStudent")
 };
+
 function showOnly(which) {
   Object.entries(views).forEach(([k, el]) => (el.style.display = (k === which ? "" : "none")));
 }
@@ -47,7 +48,8 @@ function errMsg(e) {
   if (m.includes("auth/invalid-credential")) return "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
   if (m.includes("auth/email-already-in-use")) return "อีเมลนี้ถูกใช้แล้ว";
   if (m.includes("auth/weak-password")) return "รหัสผ่านสั้นเกินไป (อย่างน้อย 6 ตัว)";
-  if (m.includes("permission-denied")) return "permission-denied: Firestore Rules ยังไม่อนุญาต";
+  if (m.includes("auth/unauthorized-domain")) return "unauthorized-domain: ให้เพิ่มโดเมน GitHub Pages ใน Authorized domains";
+  if (m.includes("permission-denied")) return "permission-denied: Firestore Rules ไม่อนุญาต (ตรวจ rules + where query)";
   return m;
 }
 
@@ -96,7 +98,7 @@ $("logoutBtn").addEventListener("click", async () => {
 });
 
 /* =========================
-   2) Load my profile
+   2) Profile
    ========================= */
 async function getMyProfile(uid) {
   const ref = doc(db, "users", uid);
@@ -106,7 +108,7 @@ async function getMyProfile(uid) {
 }
 
 /* =========================
-   3) Global caches
+   3) Caches
    ========================= */
 let cacheClasses = [];
 let cacheUsers = [];
@@ -117,16 +119,40 @@ async function loadClasses() {
   const qs = await getDocs(query(collection(db, "classes"), orderBy("name")));
   cacheClasses = qs.docs.map(d => ({ id: d.id, ...d.data() }));
 }
+
+// (rules: teacher list ได้ / student list ไม่ได้) -> เรียกเฉพาะครู
 async function loadUsers() {
   const qs = await getDocs(query(collection(db, "users"), orderBy("role")));
   cacheUsers = qs.docs.map(d => ({ uid: d.id, ...d.data() }));
 }
-async function loadAssignments() {
-  const qs = await getDocs(query(collection(db, "assignments"), orderBy("createdAt", "desc")));
+
+// rules compatible: student ต้อง where(classId == myClassId)
+async function loadAssignmentsFor(role, classId) {
+  if (role === "teacher") {
+    const qs = await getDocs(query(collection(db, "assignments"), orderBy("createdAt", "desc")));
+    cacheAssignments = qs.docs.map(d => ({ id: d.id, ...d.data() }));
+    return;
+  }
+  const qs = await getDocs(query(
+    collection(db, "assignments"),
+    where("classId", "==", classId),
+    orderBy("createdAt", "desc")
+  ));
   cacheAssignments = qs.docs.map(d => ({ id: d.id, ...d.data() }));
 }
-async function loadSubmissions() {
-  const qs = await getDocs(query(collection(db, "submissions"), orderBy("submittedAt", "desc")));
+
+// rules compatible: student ต้อง where(studentUid == uid)
+async function loadSubmissionsFor(role, studentUid) {
+  if (role === "teacher") {
+    const qs = await getDocs(query(collection(db, "submissions"), orderBy("submittedAt", "desc")));
+    cacheSubmissions = qs.docs.map(d => ({ id: d.id, ...d.data() }));
+    return;
+  }
+  const qs = await getDocs(query(
+    collection(db, "submissions"),
+    where("studentUid", "==", studentUid),
+    orderBy("submittedAt", "desc")
+  ));
   cacheSubmissions = qs.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
@@ -138,9 +164,11 @@ function classNameOf(id) {
 function getAssignmentsForClass(classId) {
   return cacheAssignments.filter(a => a.classId === classId);
 }
+
 function findSubmission(assignmentId, studentUid) {
   return cacheSubmissions.find(s => s.assignmentId === assignmentId && s.studentUid === studentUid) || null;
 }
+
 async function upsertSubmission({ assignmentId, studentUid, classId, method, scannedBy }) {
   const id = `${assignmentId}_${studentUid}`;
   await setDoc(doc(db, "submissions", id), {
@@ -182,7 +210,7 @@ function fillClassDropdown(selectEl, value) {
 }
 
 /* =========================
-   6) Teacher - Quick summary
+   6) Teacher Quick
    ========================= */
 function renderTeacherQuick(me) {
   const totalUsers = cacheUsers.length;
@@ -204,7 +232,7 @@ function renderTeacherQuick(me) {
 }
 
 /* =========================
-   7) Teacher - Users (Pretty UI)
+   7) Teacher - Users
    ========================= */
 function renderUsersTable(me) {
   const rows = cacheUsers.slice().sort((a,b)=>{
@@ -301,7 +329,6 @@ function openUserEditor(me, user) {
         if (studentNoRaw !== "") {
           const n = Number(studentNoRaw);
           if (!Number.isFinite(n) || n < 1) throw new Error("studentNo ต้องเป็นตัวเลข >= 1");
-          // duplicate check in same class
           if (classId) {
             const dup = cacheUsers.some(u =>
               u.uid !== user.uid && u.role==="student" && u.classId===classId && u.studentNo===n
@@ -416,7 +443,7 @@ function renderClasses(me) {
    9) Teacher - Tasks
    ========================= */
 async function renderTeacherTasks(me) {
-  await loadAssignments();
+  await loadAssignmentsFor("teacher");
 
   const classOptions = cacheClasses.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
 
@@ -477,7 +504,7 @@ async function renderTeacherTasks(me) {
   `;
 
   $("reloadTasksBtn").addEventListener("click", async ()=>{
-    await loadAssignments();
+    await loadAssignmentsFor("teacher");
     await renderTeacherTasks(me);
   });
 
@@ -505,7 +532,7 @@ async function renderTeacherTasks(me) {
 
       $("t_title").value = "";
       $("t_detail").value = "";
-      await loadAssignments();
+      await loadAssignmentsFor("teacher");
       await renderTeacherTasks(me);
       alert("✅ สร้างงานแล้ว");
     } catch(e) {
@@ -518,65 +545,171 @@ async function renderTeacherTasks(me) {
       const id = btn.getAttribute("data-del-task");
       if (!confirm("ยืนยันลบงานนี้?")) return;
       await deleteDoc(doc(db, "assignments", id));
-      await loadAssignments();
+      await loadAssignmentsFor("teacher");
       await renderTeacherTasks(me);
     });
   });
 }
 
 /* =========================
-   10) Teacher - Dashboard
+   10) Teacher - Dashboard (ดูรายคนในห้อง + รายละเอียด)
    ========================= */
 async function renderTeacherDashboard(me) {
-  await loadAssignments();
-  await loadSubmissions();
-  await loadUsers();
   await loadClasses();
+  await loadUsers();
+  await loadAssignmentsFor("teacher");
+  await loadSubmissionsFor("teacher");
 
-  const byClass = cacheClasses.map(c=>{
-    const assigns = getAssignmentsForClass(c.id);
-    const students = cacheUsers.filter(u=>u.role==="student" && u.classId===c.id);
-    const total = assigns.length * students.length;
+  const classOptions = cacheClasses.map(c =>
+    `<option value="${c.id}">${c.name} (${c.id})</option>`
+  ).join("");
 
-    let submitted = 0;
-    for (const a of assigns) {
-      for (const st of students) {
-        if (findSubmission(a.id, st.uid)) submitted++;
+  const firstClassId = cacheClasses[0]?.id || "";
+  $("teacherPanel").innerHTML = `
+    <div class="row sp">
+      <h3>Dashboard รายคน</h3>
+      <div class="row">
+        <button id="dashReload" class="secondary">รีเฟรช</button>
+      </div>
+    </div>
+
+    <div class="two">
+      <div>
+        <label>เลือก Class</label>
+        <select id="dashClass">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+      </div>
+      <div>
+        <label>ดูรายละเอียดนักเรียน</label>
+        <select id="dashStudent"><option value="">-- เลือกนักเรียน --</option></select>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+    <div id="dashTable"></div>
+
+    <div class="hr"></div>
+    <div id="dashDetail" class="toast tiny">ยังไม่ได้เลือกนักเรียน</div>
+  `;
+
+  $("dashClass").value = firstClassId;
+
+  const render = (classId) => {
+    const students = cacheUsers
+      .filter(u => u.role === "student" && u.classId === classId)
+      .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
+
+    const assigns = cacheAssignments
+      .filter(a => a.classId === classId)
+      .sort((a,b)=>(a.dueAt||0)-(b.dueAt||0));
+
+    const sSel = $("dashStudent");
+    sSel.innerHTML = `<option value="">-- เลือกนักเรียน --</option>` + students.map(s =>
+      `<option value="${s.uid}">${s.studentNo ?? "-"} . ${s.name || s.email}</option>`
+    ).join("");
+
+    const rows = students.map(s => {
+      let done = 0, late = 0, pending = 0;
+      for (const a of assigns) {
+        const sub = cacheSubmissions.find(x => x.assignmentId === a.id && x.studentUid === s.uid);
+        if (sub) done++;
+        else {
+          pending++;
+          if (Date.now() > (a.dueAt||0)) late++;
+        }
       }
-    }
-    const pending = total - submitted;
-    const pct = total ? Math.round((submitted/total)*100) : 0;
-    return { classId:c.id, name:c.name, total, submitted, pending, pct };
+      const total = assigns.length;
+      const pct = total ? Math.round((done/total)*100) : 0;
+
+      return `
+        <tr>
+          <td><b>${s.studentNo ?? "-"} . ${s.name || "-"}</b><div class="muted tiny">${s.email || ""}</div></td>
+          <td class="right">${done}/${total}</td>
+          <td class="right">${pending}</td>
+          <td class="right"><b style="color:${late>0?'#ff6b6b':'#44d19d'}">${late}</b></td>
+          <td class="right"><b>${pct}%</b></td>
+          <td class="right"><button class="secondary" data-view="${s.uid}">ดูรายละเอียด</button></td>
+        </tr>
+      `;
+    }).join("");
+
+    $("dashTable").innerHTML = `
+      <div class="toast tiny">
+        งานในห้องนี้ทั้งหมด: <b>${assigns.length}</b> • นักเรียน: <b>${students.length}</b>
+      </div>
+      <div class="hr"></div>
+      <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
+        <table>
+          <thead>
+            <tr>
+              <th style="min-width:260px">นักเรียน</th>
+              <th class="right" style="min-width:90px">ส่งแล้ว</th>
+              <th class="right" style="min-width:70px">ค้าง</th>
+              <th class="right" style="min-width:90px">เลยกำหนด</th>
+              <th class="right" style="min-width:90px">Progress</th>
+              <th class="right" style="min-width:120px">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || `<tr><td colspan="6" class="muted">ยังไม่มีนักเรียน/งาน</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const renderDetail = (studentUid) => {
+      const student = cacheUsers.find(u => u.uid === studentUid);
+      const items = assigns.map(a=>{
+        const sub = cacheSubmissions.find(x => x.assignmentId === a.id && x.studentUid === studentUid);
+        const lateFlag = !sub && Date.now() > (a.dueAt||0);
+        const badge = sub
+          ? `<span class="badge"><span class="dot ok"></span>ส่งแล้ว</span>`
+          : lateFlag
+            ? `<span class="badge"><span class="dot bad"></span>ค้าง (เลยกำหนด)</span>`
+            : `<span class="badge"><span class="dot warn"></span>ค้าง</span>`;
+        const detail = sub ? `QR • ${fmtDateTime(sub.submittedAt)}` : `Due ${fmtDateTime(a.dueAt)}`;
+        return `<li style="margin:8px 0">
+          ${badge} <b>${a.title}</b>
+          <div class="muted tiny">${detail}${a.detail ? " • " + a.detail : ""}</div>
+        </li>`;
+      }).join("");
+
+      $("dashDetail").innerHTML = `
+        <div><b>รายละเอียด:</b> ${student?.studentNo ?? "-"} . ${student?.name || student?.email || studentUid}</div>
+        <div class="hr"></div>
+        <ul style="margin:0;padding-left:18px">${items || "<li class='muted'>ยังไม่มีงาน</li>"}</ul>
+      `;
+    };
+
+    document.querySelectorAll("[data-view]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const uid = btn.getAttribute("data-view");
+        sSel.value = uid;
+        renderDetail(uid);
+      });
+    });
+
+    sSel.onchange = () => {
+      const uid = sSel.value;
+      if (!uid) $("dashDetail").textContent = "ยังไม่ได้เลือกนักเรียน";
+      else renderDetail(uid);
+    };
+
+    $("dashDetail").textContent = "ยังไม่ได้เลือกนักเรียน";
+  };
+
+  $("dashReload").addEventListener("click", async ()=>{
+    await loadClasses();
+    await loadUsers();
+    await loadAssignmentsFor("teacher");
+    await loadSubmissionsFor("teacher");
+    render($("dashClass").value);
   });
 
-  $("teacherPanel").innerHTML = `
-    <h3>Dashboard</h3>
-    <div class="toast tiny">ภาพรวมการส่งงาน (Assignments x Students) ต่อห้อง</div>
-    <div class="hr"></div>
+  $("dashClass").addEventListener("change", ()=>{
+    render($("dashClass").value);
+  });
 
-    <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
-      <table>
-        <thead>
-          <tr>
-            <th>Class</th>
-            <th class="right">ส่งแล้ว</th>
-            <th class="right">ค้าง</th>
-            <th class="right">Progress</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${byClass.map(r=>`
-            <tr>
-              <td><b>${r.name}</b><div class="muted tiny">${r.classId}</div></td>
-              <td class="right">${r.submitted}/${r.total}</td>
-              <td class="right"><b style="color:${r.pending>0?'#ffcc66':'#44d19d'}">${r.pending}</b></td>
-              <td class="right"><b>${r.pct}%</b></td>
-            </tr>
-          `).join("") || `<tr><td colspan="4" class="muted">ยังไม่มีข้อมูล</td></tr>`}
-        </tbody>
-      </table>
-    </div>
-  `;
+  render($("dashClass").value);
 }
 
 /* =========================
@@ -623,7 +756,6 @@ async function renderTeacherQR(me) {
       list.appendChild(box);
 
       const payload = JSON.stringify({ type:"STUDENT", uid: st.uid });
-      // qrcodejs attaches to window.QRCode
       new window.QRCode(document.getElementById(`qr_${st.uid}`), { text: payload, width: 140, height: 140 });
     });
   };
@@ -636,7 +768,7 @@ async function renderTeacherQR(me) {
 }
 
 /* =========================
-   12) Teacher - QR Scanner
+   12) Teacher - Scanner
    ========================= */
 let scanner = { running:false, stream:null, raf:null, assignmentId:null, classId:null };
 
@@ -651,8 +783,8 @@ function stopScanner() {
 }
 
 async function renderTeacherScan(me) {
-  await loadAssignments();
-  await loadSubmissions();
+  await loadAssignmentsFor("teacher");
+  await loadSubmissionsFor("teacher");
   await loadUsers();
   await loadClasses();
 
@@ -701,7 +833,9 @@ async function renderTeacherScan(me) {
   classSel.addEventListener("change", ()=>fillAssignments(classSel.value));
 
   $("reloadScanBtn").addEventListener("click", async ()=>{
-    await loadAssignments(); await loadSubmissions(); await loadUsers();
+    await loadAssignmentsFor("teacher");
+    await loadSubmissionsFor("teacher");
+    await loadUsers();
     renderTeacherScan(me);
   });
 
@@ -769,7 +903,7 @@ async function startScanner(me) {
                 method: "QR",
                 scannedBy: me.uid
               });
-              await loadSubmissions();
+              await loadSubmissionsFor("teacher");
               $("scanResult").innerHTML = `✅ บันทึกส่งแล้ว: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b> เวลา ${fmtDateTime(Date.now())}`;
             }
           } else {
@@ -791,21 +925,17 @@ async function startScanner(me) {
 }
 
 /* =========================
-   13) Student (Read-only tasks + progress)
+   13) Student (read-only)
    ========================= */
-function isLate(a) {
-  return Date.now() > (a.dueAt || 0);
-}
+function isLate(a) { return Date.now() > (a.dueAt || 0); }
+
 function statusForStudent(assignment, studentUid) {
   const sub = cacheSubmissions.find(s => s.assignmentId === assignment.id && s.studentUid === studentUid);
-  if (sub) {
-    return { label:"ส่งแล้ว", cls:"ok", detail:`QR • ${fmtDateTime(sub.submittedAt)}` };
-  }
-  if (isLate(assignment)) {
-    return { label:"ค้าง (เลยกำหนด)", cls:"bad", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
-  }
+  if (sub) return { label:"ส่งแล้ว", cls:"ok", detail:`QR • ${fmtDateTime(sub.submittedAt)}` };
+  if (isLate(assignment)) return { label:"ค้าง (เลยกำหนด)", cls:"bad", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
   return { label:"ค้าง", cls:"warn", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
 }
+
 function renderStudentProgressBar(done, total) {
   const pct = total ? Math.round((done / total) * 100) : 0;
   return `
@@ -824,15 +954,11 @@ function renderStudentProgressBar(done, total) {
     </div>
   `;
 }
+
 async function renderStudent(me) {
-  await loadAssignments();
-  await loadSubmissions();
   await loadClasses();
 
-  const classId = me.classId || "";
-  const cls = cacheClasses.find(c => c.id === classId);
-
-  if (!classId) {
+  if (!me.classId) {
     $("studentPanel").innerHTML = `
       <div class="toast">
         <div><b>Email:</b> ${me.email || "-"}</div>
@@ -849,8 +975,14 @@ async function renderStudent(me) {
     return;
   }
 
+  // rules-compatible queries
+  await loadAssignmentsFor("student", me.classId);
+  await loadSubmissionsFor("student", me.uid);
+
+  const cls = cacheClasses.find(c => c.id === me.classId);
+
   const assignments = cacheAssignments
-    .filter(a => a.classId === classId)
+    .slice()
     .sort((a,b)=> (a.dueAt||0) - (b.dueAt||0));
 
   let done = 0;
@@ -876,8 +1008,8 @@ async function renderStudent(me) {
 
   $("studentPanel").innerHTML = `
     <div class="row sp">
-      <div>
-        <div class="muted tiny">ห้อง: <b>${cls ? cls.name : classId}</b> • เลขที่: <b>${me.studentNo ?? "-"}</b></div>
+      <div class="muted tiny">
+        ห้อง: <b>${cls ? cls.name : me.classId}</b> • เลขที่: <b>${me.studentNo ?? "-"}</b>
       </div>
       <div class="badge"><span class="dot"></span>Read-only</div>
     </div>
@@ -912,7 +1044,7 @@ async function renderStudent(me) {
    14) Teacher main render
    ========================= */
 async function renderTeacher() {
-  stopScanner(); // กันกล้องค้างเวลาเปลี่ยนแท็บ
+  stopScanner();
 
   const u = auth.currentUser;
   if (!u) return;
@@ -948,7 +1080,6 @@ onAuthStateChanged(auth, async (user) => {
   $("logoutBtn").style.display = "";
   const me = await getMyProfile(user.uid);
 
-  // if profile doc missing, create minimal (student default)
   if (!me) {
     await setDoc(doc(db, "users", user.uid), {
       email: user.email || "",
