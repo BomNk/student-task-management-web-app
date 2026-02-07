@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Homework Tracker (GitHub Pages)</title>
+
+  <!-- QR generate -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <!-- QR scan -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+
+  <style>
+    :root{--bg:#0b1220;--card:#111a2e;--muted:#8aa0c7;--text:#e8f0ff;--line:#253355;--ok:#44d19d;--warn:#ffcc66;--bad:#ff6b6b;--btn:#2a5bd7}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;color:var(--text);background:linear-gradient(120deg,#081021,#0b1220)}
+    a{color:#a9c6ff}
+    .wrap{max-width:1100px;margin:0 auto;padding:18px}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:14px}
+    .brand{display:flex;gap:10px;align-items:center}
+    .logo{width:36px;height:36px;border-radius:12px;background:radial-gradient(circle at 30% 30%, #7cc2ff, #2a5bd7 60%, #15307a)}
+    .title{font-weight:800}
+    .pill{padding:6px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px}
+    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+    @media(max-width:900px){.grid{grid-template-columns:1fr}}
+    .card{background:rgba(17,26,46,.9);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .sp{justify-content:space-between}
+    h2{margin:0 0 10px;font-size:18px}
+    h3{margin:0 0 10px;font-size:16px;color:#cfe1ff}
+    label{display:block;font-size:12px;color:var(--muted);margin:10px 0 6px}
+    input,select,textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#0c152b;color:var(--text);outline:none}
+    textarea{min-height:90px;resize:vertical}
+    button{border:0;border-radius:12px;padding:10px 12px;background:var(--btn);color:white;font-weight:700;cursor:pointer}
+    button.secondary{background:#1a2a4b;border:1px solid var(--line);color:#dbe7ff}
+    button.danger{background:#7a1d2a}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .muted{color:var(--muted)}
+    .hr{height:1px;background:var(--line);margin:12px 0}
+    table{width:100%;border-collapse:collapse}
+    th,td{border-bottom:1px solid var(--line);padding:10px 8px;text-align:left;font-size:13px}
+    th{color:#cfe1ff;font-size:12px}
+    .badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);display:inline-flex;gap:6px;align-items:center}
+    .dot{width:8px;height:8px;border-radius:99px;background:var(--muted)}
+    .ok{background:var(--ok)} .warn{background:var(--warn)} .bad{background:var(--bad)}
+    .progress{height:10px;background:#0c152b;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+    .bar{height:100%;background:linear-gradient(90deg,#44d19d,#2a5bd7);width:0%}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media(max-width:900px){.two{grid-template-columns:1fr}}
+    .qr-box{display:flex;gap:14px;flex-wrap:wrap}
+    .qr-item{width:220px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#0c152b}
+    .qr-item .name{font-weight:800;margin-bottom:6px}
+    video{width:100%;border-radius:16px;border:1px solid var(--line);background:#000}
+    canvas{display:none}
+    .toast{padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:#0c152b}
+    .tiny{font-size:12px}
+    .right{text-align:right}
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo"></div>
+        <div>
+          <div class="title">Homework Tracker</div>
+          <div class="muted tiny">Static Web App (GitHub Pages)</div>
+        </div>
+      </div>
+      <div class="row">
+        <span id="who" class="pill">ยังไม่ได้ล็อกอิน</span>
+        <button id="logoutBtn" class="secondary" style="display:none">ออกจากระบบ</button>
+      </div>
+    </header>
+
+    <!-- LOGIN -->
+    <section id="viewLogin" class="grid">
+      <div class="card">
+        <h2>เข้าสู่ระบบ</h2>
+        <div class="muted tiny">เดโมนี้เก็บข้อมูลในเบราว์เซอร์ (localStorage) เหมาะสำหรับ POC / ทดลองใช้</div>
+
+        <label>เลือกผู้ใช้เดโม</label>
+        <select id="demoUser"></select>
+
+        <div class="row" style="margin-top:12px">
+          <button id="loginBtn">Login</button>
+          <button id="resetBtn" class="secondary">รีเซ็ตข้อมูลเดโม</button>
+        </div>
+
+        <div class="hr"></div>
+        <div class="toast tiny">
+          <b>วิธีใช้งาน QR:</b> ครูไปที่เมนู “QR นักเรียน” เพื่อพิมพ์ QR แปะสมุด → เวลารับงาน เลือก “งาน” แล้วกด “เริ่มสแกน” → สแกนจากสมุดเพื่อบันทึกส่ง
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>ฟีเจอร์</h2>
+        <ul class="muted">
+          <li>ครู: สร้างงาน, ตรวจสถานะส่ง/ค้าง, สแกน QR เพื่อ mark “ส่งแล้ว”</li>
+          <li>นักเรียน: ดูงานทั้งหมด, สถานะ, progress bar</li>
+          <li>พิมพ์/แสดง QR ของนักเรียนเพื่อแปะสมุด</li>
+        </ul>
+        <div class="hr"></div>
+        <div class="tiny muted">
+          *หมายเหตุ: กล้องสแกนทำงานบน HTTPS เท่านั้น (GitHub Pages OK)
+        </div>
+      </div>
+    </section>
+
+    <!-- TEACHER -->
+    <section id="viewTeacher" style="display:none" class="grid">
+      <div class="card">
+        <div class="row sp">
+          <h2>แดชบอร์ดครู</h2>
+          <div class="row">
+            <button id="navTeacherDashboard" class="secondary">Dashboard</button>
+            <button id="navTeacherTasks" class="secondary">จัดการงาน</button>
+            <button id="navTeacherQR" class="secondary">QR นักเรียน</button>
+            <button id="navTeacherScan" class="secondary">สแกนส่งงาน</button>
+          </div>
+        </div>
+
+        <div id="teacherPanel"></div>
+      </div>
+
+      <div class="card">
+        <h2>สรุปเร็ว</h2>
+        <div id="teacherQuick"></div>
+      </div>
+    </section>
+
+    <!-- STUDENT -->
+    <section id="viewStudent" style="display:none" class="grid">
+      <div class="card">
+        <div class="row sp">
+          <h2>งานของฉัน</h2>
+          <div class="row">
+            <button id="navStudentHome" class="secondary">รายการงาน</button>
+            <button id="navStudentProfile" class="secondary">โปรไฟล์</button>
+          </div>
+        </div>
+
+        <div id="studentPanel"></div>
+      </div>
+
+      <div class="card">
+        <h2>Progress</h2>
+        <div id="studentProgress"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
