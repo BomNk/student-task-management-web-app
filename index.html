@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Homework Tracker (Firebase)</title>
+  <title>Student Task Management (Firebase + GitHub Pages)</title>
 
   <style>
     :root{--bg:#0b1220;--card:#111a2e;--muted:#8aa0c7;--text:#e8f0ff;--line:#253355;--ok:#44d19d;--warn:#ffcc66;--bad:#ff6b6b;--btn:#2a5bd7}
@@ -15,7 +15,7 @@
     .logo{width:36px;height:36px;border-radius:12px;background:radial-gradient(circle at 30% 30%, #7cc2ff, #2a5bd7 60%, #15307a)}
     .title{font-weight:800}
     .pill{padding:6px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px}
-    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}
+    .grid{display:grid;grid-template-columns:1.25fr .75fr;gap:14px}
     @media(max-width:900px){.grid{grid-template-columns:1fr}}
     .card{background:rgba(17,26,46,.9);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
@@ -24,6 +24,7 @@
     h3{margin:0 0 10px;font-size:16px;color:#cfe1ff}
     label{display:block;font-size:12px;color:var(--muted);margin:10px 0 6px}
     input,select,textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#0c152b;color:var(--text);outline:none}
+    textarea{min-height:90px;resize:vertical}
     button{border:0;border-radius:12px;padding:10px 12px;background:var(--btn);color:white;font-weight:700;cursor:pointer}
     button.secondary{background:#1a2a4b;border:1px solid var(--line);color:#dbe7ff}
     button.danger{background:#7a1d2a}
@@ -41,6 +42,7 @@
     .tiny{font-size:12px}
     .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     @media(max-width:900px){.two{grid-template-columns:1fr}}
+    video{width:100%;border-radius:16px;border:1px solid var(--line);background:#000}
 
     /* modal */
     .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
@@ -56,7 +58,7 @@
       <div class="brand">
         <div class="logo"></div>
         <div>
-          <div class="title">Homework Tracker</div>
+          <div class="title">Student Task Management</div>
           <div class="muted tiny">Firebase • GitHub Pages</div>
         </div>
       </div>
@@ -84,22 +86,19 @@
 
         <div class="hr"></div>
         <div class="toast tiny">
-          ถ้ายังไม่มีบัญชี: กด Sign up → ระบบจะสร้าง users/{uid} เป็น role=student อัตโนมัติ แล้วครูจะมา assign ห้อง/เลขที่ในหน้า “Users”
+          ระบบนี้ “ครูสแกน QR อย่างเดียว” นักเรียนไม่สามารถกดส่งเองได้<br>
+          ถ้ายังไม่มีบัญชี: กด Sign up → ระบบสร้าง users/{uid} เป็น role=student → ครูมา assign ห้อง/เลขที่ในหน้า Users
         </div>
 
         <div id="loginMsg" class="muted tiny" style="margin-top:10px"></div>
       </div>
 
       <div class="card">
-        <h2>หมายเหตุ</h2>
-        <ul class="muted">
-          <li>ครูต้องมี role=teacher ใน Firestore (ตั้งครั้งแรกด้านล่าง)</li>
-          <li>ข้อมูลใช้ร่วมกันได้ทุกเครื่อง เพราะอยู่บน Firestore</li>
-        </ul>
-
-        <div class="hr"></div>
+        <h2>ตั้งค่าครูครั้งแรก</h2>
         <div class="toast tiny">
-          <b>ตั้งครูครั้งแรก:</b> สมัครด้วยอีเมลครู → เข้า Firestore → users/{uid} → เปลี่ยน role เป็น “teacher”
+          1) สมัครด้วยอีเมลครู (Sign up)<br>
+          2) ไป Firestore → users/{uid} ของครู → เปลี่ยน role เป็น <b>"teacher"</b><br>
+          3) refresh หน้าเว็บ
         </div>
       </div>
     </section>
@@ -110,6 +109,10 @@
         <div class="row sp">
           <h2>Teacher Console</h2>
           <div class="row">
+            <button id="navTeacherDashboard" class="secondary">Dashboard</button>
+            <button id="navTeacherTasks" class="secondary">Tasks</button>
+            <button id="navTeacherQR" class="secondary">QR นักเรียน</button>
+            <button id="navTeacherScan" class="secondary">สแกนส่งงาน</button>
             <button id="navTeacherUsers" class="secondary">Users</button>
             <button id="navTeacherClasses" class="secondary">Classes</button>
           </div>
@@ -126,7 +129,7 @@
     <!-- STUDENT -->
     <section id="viewStudent" style="display:none" class="grid">
       <div class="card">
-        <h2>Student</h2>
+        <h2>งานของฉัน (Read-only)</h2>
         <div id="studentPanel"></div>
       </div>
       <div class="card">
@@ -141,7 +144,7 @@
     <div class="modal">
       <div class="head">
         <div>
-          <div style="font-weight:800" id="userModalTitle">Add User</div>
+          <div style="font-weight:800" id="userModalTitle">Edit User</div>
           <div class="muted tiny" id="userModalSub">จัดการข้อมูลผู้ใช้</div>
         </div>
         <button id="closeUserModal" class="xbtn">ปิด</button>
@@ -187,12 +190,17 @@
 
       <div class="row" style="margin-top:12px">
         <button id="saveUserBtn">บันทึก</button>
-        <button id="deleteUserBtn" class="danger" style="display:none">ลบผู้ใช้</button>
+        <button id="deleteUserBtn" class="danger">ลบ user doc</button>
       </div>
 
       <div id="modalMsg" class="muted tiny" style="margin-top:10px"></div>
     </div>
   </div>
+
+  <!-- QR generate -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <!-- QR scan -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 
   <script type="module" src="./app.js"></script>
 </body>
