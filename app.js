@@ -17,7 +17,7 @@ import {
    ========================= */
 const firebaseConfig = {
   // PASTE_HERE
-  apiKey: "AIzaSyCwRebNtj7kO5HjT6lTrd6TB4RiF2GaXrQ",
+ apiKey: "AIzaSyCwRebNtj7kO5HjT6lTrd6TB4RiF2GaXrQ",
   authDomain: "student-task-managment-10db2.firebaseapp.com",
   projectId: "student-task-managment-10db2",
   storageBucket: "student-task-managment-10db2.firebasestorage.app",
@@ -37,7 +37,6 @@ const views = {
   teacher: $("viewTeacher"),
   student: $("viewStudent")
 };
-
 function showOnly(which) {
   Object.entries(views).forEach(([k, el]) => (el.style.display = (k === which ? "" : "none")));
 }
@@ -49,15 +48,15 @@ function errMsg(e) {
   if (m.includes("auth/email-already-in-use")) return "อีเมลนี้ถูกใช้แล้ว";
   if (m.includes("auth/weak-password")) return "รหัสผ่านสั้นเกินไป (อย่างน้อย 6 ตัว)";
   if (m.includes("auth/unauthorized-domain")) return "unauthorized-domain: เพิ่มโดเมน GitHub Pages ใน Authorized domains";
-  if (m.includes("permission-denied")) return "permission-denied: Firestore Rules ไม่อนุญาต (ตรวจ rules + where query)";
+  if (m.includes("permission-denied")) return "permission-denied: Firestore Rules ไม่อนุญาต";
   return m;
 }
-
 function fmtDateTime(ts) {
   if (!ts) return "-";
   const d = new Date(ts);
   return d.toLocaleString(undefined, { year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" });
 }
+function safe(v){ return (v===undefined || v===null) ? "" : String(v); }
 
 /* =========================
    1) Auth UI
@@ -108,25 +107,35 @@ async function getMyProfile(uid) {
 }
 
 /* =========================
-   3) Caches
+   3) Caches + student state
    ========================= */
 let cacheClasses = [];
 let cacheUsers = [];
 let cacheAssignments = [];
 let cacheSubmissions = [];
 
+let studentFilter = "all";        // all | pending | submitted | late | dueSoon
+const DUE_SOON_HOURS = 24;
+
 async function loadClasses() {
+  // ใช้ orderBy ได้ ถ้าติด index เปลี่ยนเป็น getDocs(collection(...)) แล้ว sort client-side
   const qs = await getDocs(query(collection(db, "classes"), orderBy("name")));
   cacheClasses = qs.docs.map(d => ({ id: d.id, ...d.data() }));
 }
-
-// teacher only
 async function loadUsers() {
-  const qs = await getDocs(query(collection(db, "users"), orderBy("role")));
+  // ไม่ใช้ orderBy เพื่อลดปัญหา index
+  const qs = await getDocs(collection(db, "users"));
   cacheUsers = qs.docs.map(d => ({ uid: d.id, ...d.data() }));
+  cacheUsers.sort((a,b)=>{
+    const ra = a.role || "", rb = b.role || "";
+    if (ra !== rb) return ra.localeCompare(rb);
+    const ca = a.classId || "", cb = b.classId || "";
+    if (ca !== cb) return ca.localeCompare(cb);
+    return (Number(a.studentNo||9999) - Number(b.studentNo||9999));
+  });
 }
 
-// rules-compatible: student ต้อง where(classId == myClassId)
+// teacher: all assignments, student: where classId==myClass
 async function loadAssignmentsFor(role, classId) {
   if (role === "teacher") {
     const qs = await getDocs(query(collection(db, "assignments"), orderBy("createdAt", "desc")));
@@ -141,7 +150,7 @@ async function loadAssignmentsFor(role, classId) {
   cacheAssignments = qs.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-// rules-compatible: student ต้อง where(studentUid == uid)
+// teacher: all submissions, student: where studentUid==me
 async function loadSubmissionsFor(role, studentUid) {
   if (role === "teacher") {
     const qs = await getDocs(query(collection(db, "submissions"), orderBy("submittedAt", "desc")));
@@ -160,15 +169,12 @@ function classNameOf(id) {
   const c = cacheClasses.find(x => x.id === id);
   return c ? `${c.name} (${c.id})` : (id || "-");
 }
-
 function getAssignmentsForClass(classId) {
   return cacheAssignments.filter(a => a.classId === classId);
 }
-
 function findSubmission(assignmentId, studentUid) {
   return cacheSubmissions.find(s => s.assignmentId === assignmentId && s.studentUid === studentUid) || null;
 }
-
 async function upsertSubmission({ assignmentId, studentUid, classId, method, scannedBy }) {
   const id = `${assignmentId}_${studentUid}`;
   await setDoc(doc(db, "submissions", id), {
@@ -181,7 +187,6 @@ async function upsertSubmission({ assignmentId, studentUid, classId, method, sca
     scannedBy: scannedBy || null
   }, { merge: true });
 }
-
 async function deleteSubmission(assignmentId, studentUid) {
   const id = `${assignmentId}_${studentUid}`;
   await deleteDoc(doc(db, "submissions", id));
@@ -200,22 +205,7 @@ $("navTeacherUsers").addEventListener("click", () => { stopScanner(); teacherTab
 $("navTeacherClasses").addEventListener("click", () => { stopScanner(); teacherTab = "classes"; renderTeacher(); });
 
 /* =========================
-   5) Modal helpers (Users)
-   ========================= */
-function openUserModal() { $("userModalBackdrop").style.display = "flex"; $("modalMsg").textContent = ""; }
-function closeUserModal() { $("userModalBackdrop").style.display = "none"; $("modalMsg").textContent = ""; }
-$("closeUserModal").addEventListener("click", closeUserModal);
-$("userModalBackdrop").addEventListener("click", (e) => { if (e.target === $("userModalBackdrop")) closeUserModal(); });
-
-function fillClassDropdown(selectEl, value) {
-  selectEl.innerHTML = `<option value="">-- ไม่ระบุ --</option>` + cacheClasses.map(c => (
-    `<option value="${c.id}">${c.name} (${c.id})</option>`
-  )).join("");
-  selectEl.value = value || "";
-}
-
-/* =========================
-   6) Teacher Quick
+   5) Teacher Quick
    ========================= */
 function renderTeacherQuick(me) {
   const totalUsers = cacheUsers.length;
@@ -237,150 +227,7 @@ function renderTeacherQuick(me) {
 }
 
 /* =========================
-   7) Teacher - Users
-   ========================= */
-function renderUsersTable(me) {
-  const rows = cacheUsers.slice().sort((a,b)=>{
-    if (a.role !== b.role) return a.role === "teacher" ? -1 : 1;
-    return (a.email||"").localeCompare(b.email||"");
-  });
-
-  $("teacherPanel").innerHTML = `
-    <div class="row sp">
-      <h3>Users</h3>
-      <div class="row">
-        <button id="refreshUsersBtn" class="secondary">รีเฟรช</button>
-      </div>
-    </div>
-
-    <div class="toast tiny">
-      นักเรียนสมัครเอง (Auth) แล้วครูมาแก้ role/class/studentNo ที่นี่<br>
-      * ปุ่มลบ = ลบ <b>user doc</b> เท่านั้น (ไม่ลบบัญชี Auth)
-    </div>
-
-    <div class="hr"></div>
-
-    <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
-      <table>
-        <thead>
-          <tr>
-            <th style="min-width:220px">Email</th>
-            <th style="min-width:90px">Role</th>
-            <th style="min-width:180px">Name</th>
-            <th style="min-width:220px">Class</th>
-            <th class="right" style="min-width:110px">studentNo</th>
-            <th class="right" style="min-width:120px">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(u => `
-            <tr>
-              <td><b>${u.email || "-"}</b><div class="muted tiny">uid: ${u.uid}</div></td>
-              <td><span class="badge"><span class="dot ${u.role==="teacher"?"ok":"warn"}"></span>${u.role}</span></td>
-              <td>${u.name || "-"}</td>
-              <td>${classNameOf(u.classId)}</td>
-              <td class="right">${u.role==="student" ? (u.studentNo ?? "-") : "-"}</td>
-              <td class="right">
-                <button class="secondary" data-edit="${u.uid}">Edit</button>
-              </td>
-            </tr>
-          `).join("") || `<tr><td colspan="6" class="muted">ยังไม่มีผู้ใช้</td></tr>`}
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  $("refreshUsersBtn").addEventListener("click", async ()=> {
-    await loadClasses(); await loadUsers();
-    renderTeacherQuick(me);
-    renderUsersTable(me);
-  });
-
-  document.querySelectorAll("[data-edit]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      const uid = btn.getAttribute("data-edit");
-      const u = cacheUsers.find(x=>x.uid===uid);
-      openUserEditor(me, u);
-    });
-  });
-}
-
-function openUserEditor(me, user) {
-  if (!user) return;
-
-  $("userModalTitle").textContent = "Edit User";
-  $("userModalSub").textContent = "แก้ไขข้อมูลผู้ใช้ใน Firestore";
-  $("m_uid").value = user.uid || "";
-  $("m_email").value = user.email || "";
-  $("m_name").value = user.name || "";
-  $("m_role").value = user.role || "student";
-  $("m_studentNo").value = (user.studentNo ?? "");
-
-  fillClassDropdown($("m_classId"), user.classId || "");
-  $("deleteUserBtn").style.display = "";
-
-  openUserModal();
-
-  $("saveUserBtn").onclick = async () => {
-    $("modalMsg").textContent = "";
-    try {
-      const role = $("m_role").value;
-      const name = $("m_name").value.trim();
-      const classId = $("m_classId").value;
-      const studentNoRaw = $("m_studentNo").value;
-
-      let studentNo = null;
-      if (role === "student") {
-        if (studentNoRaw !== "") {
-          const n = Number(studentNoRaw);
-          if (!Number.isFinite(n) || n < 1) throw new Error("studentNo ต้องเป็นตัวเลข >= 1");
-          if (classId) {
-            const dup = cacheUsers.some(u =>
-              u.uid !== user.uid && u.role==="student" && u.classId===classId && u.studentNo===n
-            );
-            if (dup) throw new Error("เลขที่ซ้ำในห้องเดียวกัน");
-          }
-          studentNo = n;
-        }
-      }
-
-      await updateDoc(doc(db, "users", user.uid), {
-        name,
-        role,
-        classId,
-        studentNo: role==="student" ? studentNo : null
-      });
-
-      await loadUsers();
-      renderTeacherQuick(me);
-      renderUsersTable(me);
-      $("modalMsg").textContent = "✅ บันทึกแล้ว";
-      setTimeout(closeUserModal, 350);
-    } catch (e) {
-      $("modalMsg").textContent = "❌ " + errMsg(e);
-    }
-  };
-
-  $("deleteUserBtn").onclick = async () => {
-    $("modalMsg").textContent = "";
-    try {
-      if (user.uid === me.uid) throw new Error("ลบบัญชีที่กำลังล็อกอินไม่ได้");
-      if (!confirm(`ยืนยันลบ user doc: ${user.email || user.uid} ?\n(ไม่ลบบัญชี Auth)`)) return;
-
-      await deleteDoc(doc(db, "users", user.uid));
-      await loadUsers();
-      renderTeacherQuick(me);
-      renderUsersTable(me);
-      $("modalMsg").textContent = "✅ ลบแล้ว";
-      setTimeout(closeUserModal, 350);
-    } catch (e) {
-      $("modalMsg").textContent = "❌ " + errMsg(e);
-    }
-  };
-}
-
-/* =========================
-   8) Teacher - Classes
+   6) Teacher - Classes
    ========================= */
 function renderClasses(me) {
   $("teacherPanel").innerHTML = `
@@ -445,7 +292,7 @@ function renderClasses(me) {
 }
 
 /* =========================
-   9) Teacher - Tasks
+   7) Teacher - Tasks
    ========================= */
 async function renderTeacherTasks(me) {
   await loadAssignmentsFor("teacher");
@@ -454,7 +301,7 @@ async function renderTeacherTasks(me) {
 
   $("teacherPanel").innerHTML = `
     <h3>Tasks / Assignments</h3>
-    <div class="toast tiny">สร้างงาน → ครูสแกน QR เพื่อบันทึกส่ง (นักเรียนอ่านอย่างเดียว)</div>
+    <div class="toast tiny">สร้างงาน → ครูสแกน/Barcode/Manual เพื่อบันทึกส่ง (นักเรียนอ่านอย่างเดียว)</div>
     <div class="hr"></div>
 
     <h3>สร้างงานใหม่</h3>
@@ -557,7 +404,63 @@ async function renderTeacherTasks(me) {
 }
 
 /* =========================
-   10) Teacher - Dashboard (ดูรายคน)
+   8) Teacher - QR generate
+   ========================= */
+async function renderTeacherQR(me) {
+  await loadUsers();
+  await loadClasses();
+
+  const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+
+  $("teacherPanel").innerHTML = `
+    <h3>QR นักเรียน</h3>
+    <div class="toast tiny">พิมพ์ QR แปะสมุด (payload = {type:"STUDENT", uid:"..."})</div>
+
+    <label>เลือก Class</label>
+    <select id="qr_class">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+
+    <div class="hr"></div>
+    <div id="qrList" style="display:flex;gap:14px;flex-wrap:wrap"></div>
+    <div class="hr"></div>
+    <button id="printQR" class="secondary">พิมพ์หน้านี้</button>
+  `;
+
+  const renderList = (classId) => {
+    const list = $("qrList");
+    list.innerHTML = "";
+    const students = cacheUsers
+      .filter(u=>u.role==="student" && u.classId===classId)
+      .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
+
+    students.forEach(st=>{
+      const box = document.createElement("div");
+      box.style.width="220px";
+      box.style.padding="12px";
+      box.style.border="1px solid var(--line)";
+      box.style.borderRadius="16px";
+      box.style.background="#0c152b";
+      box.innerHTML = `
+        <div style="font-weight:800">${st.studentNo ?? "-"} . ${st.name || "-"}</div>
+        <div class="muted tiny">${st.email || ""}</div>
+        <div id="qr_${st.uid}" style="margin-top:10px"></div>
+        <div class="muted tiny" style="margin-top:8px">uid: ${st.uid}</div>
+      `;
+      list.appendChild(box);
+
+      const payload = JSON.stringify({ type:"STUDENT", uid: st.uid });
+      new window.QRCode(document.getElementById(`qr_${st.uid}`), { text: payload, width: 140, height: 140 });
+    });
+  };
+
+  const sel = $("qr_class");
+  if (sel.value) renderList(sel.value);
+  sel.addEventListener("change", ()=>renderList(sel.value));
+
+  $("printQR").addEventListener("click", ()=>window.print());
+}
+
+/* =========================
+   9) Teacher - Dashboard รายคนในห้อง
    ========================= */
 async function renderTeacherDashboard(me) {
   await loadClasses();
@@ -565,17 +468,13 @@ async function renderTeacherDashboard(me) {
   await loadAssignmentsFor("teacher");
   await loadSubmissionsFor("teacher");
 
-  const classOptions = cacheClasses.map(c =>
-    `<option value="${c.id}">${c.name} (${c.id})</option>`
-  ).join("");
-
+  const classOptions = cacheClasses.map(c => `<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
   const firstClassId = cacheClasses[0]?.id || "";
+
   $("teacherPanel").innerHTML = `
     <div class="row sp">
       <h3>Dashboard รายคน</h3>
-      <div class="row">
-        <button id="dashReload" class="secondary">รีเฟรช</button>
-      </div>
+      <div class="row"><button id="dashReload" class="secondary">รีเฟรช</button></div>
     </div>
 
     <div class="two">
@@ -671,7 +570,7 @@ async function renderTeacherDashboard(me) {
           : lateFlag
             ? `<span class="badge"><span class="dot bad"></span>ค้าง (เลยกำหนด)</span>`
             : `<span class="badge"><span class="dot warn"></span>ค้าง</span>`;
-        const detail = sub ? `QR/Manual • ${fmtDateTime(sub.submittedAt)} (${sub.method || "-"})` : `Due ${fmtDateTime(a.dueAt)}`;
+        const detail = sub ? `บันทึกแล้ว • ${fmtDateTime(sub.submittedAt)} (${sub.method || "-"})` : `Due ${fmtDateTime(a.dueAt)}`;
         return `<li style="margin:8px 0">
           ${badge} <b>${a.title}</b>
           <div class="muted tiny">${detail}${a.detail ? " • " + a.detail : ""}</div>
@@ -710,70 +609,269 @@ async function renderTeacherDashboard(me) {
     render($("dashClass").value);
   });
 
-  $("dashClass").addEventListener("change", ()=>{
-    render($("dashClass").value);
-  });
-
+  $("dashClass").addEventListener("change", ()=> render($("dashClass").value));
   render($("dashClass").value);
 }
 
 /* =========================
-   11) Teacher - QR students
+   10) Teacher - USERS (FULL CRUD)
    ========================= */
-async function renderTeacherQR(me) {
-  await loadUsers();
-  await loadClasses();
+let usersSelectedUid = "";
+let usersFilterRole = "all"; // all | teacher | student
+let usersFilterClass = "all";
+let usersSearch = "";
 
-  const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+function roleBadge(role){
+  if (role==="teacher") return `<span class="badge"><span class="dot ok"></span>teacher</span>`;
+  return `<span class="badge"><span class="dot warn"></span>student</span>`;
+}
+function classChip(classId){
+  const c = cacheClasses.find(x=>x.id===classId);
+  return `<span class="chip">${c?c.name: (classId||"-")}</span>`;
+}
+function toIntOrNull(v){
+  const t = String(v||"").trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (Number.isNaN(n)) return null;
+  return n;
+}
+
+async function upsertUserProfile(uid, data) {
+  await setDoc(doc(db, "users", uid), { ...data, updatedAt: Date.now() }, { merge: true });
+}
+
+async function renderTeacherUsers(me) {
+  await loadClasses();
+  await loadUsers();
+
+  const roleOptions = `
+    <option value="all">ทุก role</option>
+    <option value="teacher">teacher</option>
+    <option value="student">student</option>
+  `;
+  const classOptions = `<option value="all">ทุกห้อง</option>` +
+    cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+
+  // list filtered
+  const filtered = cacheUsers.filter(u=>{
+    if (usersFilterRole!=="all" && (u.role||"student")!==usersFilterRole) return false;
+    if (usersFilterClass!=="all" && (u.classId||"")!==usersFilterClass) return false;
+    if (usersSearch) {
+      const s = usersSearch.toLowerCase();
+      const hay = `${u.uid} ${u.email||""} ${u.name||""} ${u.classId||""} ${u.studentNo||""}`.toLowerCase();
+      if (!hay.includes(s)) return false;
+    }
+    return true;
+  });
+
+  // select default if not exist
+  if (!usersSelectedUid && filtered.length) usersSelectedUid = filtered[0].uid;
+  if (usersSelectedUid && !cacheUsers.find(x=>x.uid===usersSelectedUid)) usersSelectedUid = "";
+
+  const selected = usersSelectedUid ? cacheUsers.find(x=>x.uid===usersSelectedUid) : null;
+
+  const rows = filtered.map(u=>{
+    const active = u.uid===usersSelectedUid ? "style='outline:2px solid #7cc2ff'" : "";
+    return `
+      <tr ${active}>
+        <td>
+          <b>${u.name || "-"}</b>
+          <div class="muted tiny">${u.email || "-"}</div>
+          <div class="muted tiny">uid: ${u.uid}</div>
+        </td>
+        <td>${roleBadge(u.role || "student")}</td>
+        <td>${classChip(u.classId || "")}</td>
+        <td class="right">${u.studentNo ?? "-"}</td>
+        <td class="right">
+          <button class="secondary" data-pick="${u.uid}">แก้ไข</button>
+        </td>
+      </tr>
+    `;
+  }).join("");
 
   $("teacherPanel").innerHTML = `
-    <h3>QR นักเรียน</h3>
-    <div class="toast tiny">พิมพ์ QR แปะสมุด (payload = {type:"STUDENT", uid:"..."})</div>
+    <div class="row sp">
+      <h3>Users</h3>
+      <div class="row">
+        <button id="usersReload" class="secondary">รีเฟรช</button>
+      </div>
+    </div>
 
-    <label>เลือก Class</label>
-    <select id="qr_class">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+    <div class="toast tiny">
+      <b>สำคัญ:</b> การ “Add User” ที่นี่คือสร้าง/แก้ไขโปรไฟล์ใน Firestore เท่านั้น (ไม่สร้างบัญชี Auth)
+      <div class="hr"></div>
+      แนะนำ workflow: นักเรียน Sign up → ครูมา assign ห้อง/เลขที่ ที่หน้านี้
+    </div>
 
     <div class="hr"></div>
-    <div id="qrList" style="display:flex;gap:14px;flex-wrap:wrap"></div>
-    <div class="hr"></div>
-    <button id="printQR" class="secondary">พิมพ์หน้านี้</button>
+
+    <div class="panel2">
+      <div>
+        <div class="row sp">
+          <div class="row">
+            <select id="usersRoleFilter" style="max-width:160px">${roleOptions}</select>
+            <select id="usersClassFilter" style="max-width:220px">${classOptions}</select>
+            <input id="usersSearch" placeholder="ค้นหา name/email/uid/เลขที่..." style="max-width:260px" />
+          </div>
+          <div class="chip">ทั้งหมดที่แสดง: <b>${filtered.length}</b></div>
+        </div>
+
+        <div class="hr"></div>
+
+        <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
+          <table>
+            <thead>
+              <tr>
+                <th style="min-width:280px">ผู้ใช้</th>
+                <th style="min-width:110px">Role</th>
+                <th style="min-width:160px">Class</th>
+                <th class="right" style="min-width:80px">เลขที่</th>
+                <th class="right" style="min-width:120px">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || `<tr><td colspan="5" class="muted">ไม่พบ users</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div class="toast tiny">
+          <b>เพิ่ม/แก้ไข User</b>
+          <div class="muted">เลือกจากตาราง หรือกรอก UID เพื่อเพิ่มโปรไฟล์</div>
+        </div>
+
+        <div class="hr"></div>
+
+        <label>UID (ต้องตรงกับ Firebase Auth UID)</label>
+        <input id="u_uid" placeholder="วาง uid ที่นี่" value="${safe(selected?.uid || "")}" />
+
+        <label>Email</label>
+        <input id="u_email" placeholder="name@example.com" value="${safe(selected?.email || "")}" />
+
+        <label>ชื่อ-สกุล</label>
+        <input id="u_name" placeholder="ชื่อจริง" value="${safe(selected?.name || "")}" />
+
+        <div class="two">
+          <div>
+            <label>Role</label>
+            <select id="u_role">
+              <option value="student">student</option>
+              <option value="teacher">teacher</option>
+            </select>
+          </div>
+          <div>
+            <label>เลขที่</label>
+            <input id="u_no" placeholder="เช่น 12" value="${safe(selected?.studentNo ?? "")}" />
+          </div>
+        </div>
+
+        <label>Class</label>
+        <select id="u_class">
+          <option value="">-- ไม่ระบุ --</option>
+          ${cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("")}
+        </select>
+
+        <div class="row" style="margin-top:12px">
+          <button id="usersSaveBtn">💾 Save</button>
+          <button id="usersNewBtn" class="secondary">🧹 New</button>
+          <button id="usersDeleteBtn" class="danger">🗑️ Delete Profile</button>
+        </div>
+
+        <div class="hr"></div>
+
+        <div class="toast tiny">
+          <b>Tip:</b> ถ้าเด็กสมัครแล้วแต่ยังไม่อยู่ห้อง → หา email ในตาราง → เลือก class + เลขที่ → Save
+        </div>
+      </div>
+    </div>
   `;
 
-  const renderList = (classId) => {
-    const list = $("qrList");
-    list.innerHTML = "";
-    const students = cacheUsers
-      .filter(u=>u.role==="student" && u.classId===classId)
-      .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
+  // set selects
+  $("usersRoleFilter").value = usersFilterRole;
+  $("usersClassFilter").value = usersFilterClass;
+  $("usersSearch").value = usersSearch;
 
-    students.forEach(st=>{
-      const box = document.createElement("div");
-      box.style.width="220px";
-      box.style.padding="12px";
-      box.style.border="1px solid var(--line)";
-      box.style.borderRadius="16px";
-      box.style.background="#0c152b";
-      box.innerHTML = `
-        <div style="font-weight:800">${st.studentNo ?? "-"} . ${st.name || "-"}</div>
-        <div class="muted tiny">${st.email || ""}</div>
-        <div id="qr_${st.uid}" style="margin-top:10px"></div>
-      `;
-      list.appendChild(box);
+  $("u_role").value = (selected?.role || "student");
+  $("u_class").value = (selected?.classId || "");
 
-      const payload = JSON.stringify({ type:"STUDENT", uid: st.uid });
-      new window.QRCode(document.getElementById(`qr_${st.uid}`), { text: payload, width: 140, height: 140 });
-    });
+  // events
+  $("usersReload").onclick = async ()=>{
+    await loadUsers();
+    await loadClasses();
+    renderTeacherUsers(me);
   };
 
-  const sel = $("qr_class");
-  if (sel.value) renderList(sel.value);
-  sel.addEventListener("change", ()=>renderList(sel.value));
+  $("usersRoleFilter").onchange = (e)=>{ usersFilterRole = e.target.value; usersSelectedUid = ""; renderTeacherUsers(me); };
+  $("usersClassFilter").onchange = (e)=>{ usersFilterClass = e.target.value; usersSelectedUid = ""; renderTeacherUsers(me); };
+  $("usersSearch").oninput = (e)=>{ usersSearch = e.target.value.trim(); usersSelectedUid = ""; renderTeacherUsers(me); };
 
-  $("printQR").addEventListener("click", ()=>window.print());
+  document.querySelectorAll("[data-pick]").forEach(btn=>{
+    btn.onclick = ()=>{
+      usersSelectedUid = btn.getAttribute("data-pick");
+      renderTeacherUsers(me);
+    };
+  });
+
+  $("usersNewBtn").onclick = ()=>{
+    usersSelectedUid = "";
+    $("u_uid").value = "";
+    $("u_email").value = "";
+    $("u_name").value = "";
+    $("u_role").value = "student";
+    $("u_class").value = "";
+    $("u_no").value = "";
+  };
+
+  $("usersSaveBtn").onclick = async ()=>{
+    try{
+      const uid = $("u_uid").value.trim();
+      const email = $("u_email").value.trim();
+      const name = $("u_name").value.trim();
+      const role = $("u_role").value;
+      const classId = $("u_class").value;
+      const studentNo = toIntOrNull($("u_no").value);
+
+      if (!uid) throw new Error("ต้องใส่ UID ก่อน (ให้ตรงกับ Auth UID)");
+      if (!email) throw new Error("แนะนำให้ใส่ Email (เพื่อค้นหาได้ง่าย)");
+
+      await upsertUserProfile(uid, {
+        email, name, role,
+        classId: role==="teacher" ? "" : classId,
+        studentNo: role==="teacher" ? null : studentNo,
+        createdAt: selected?.createdAt || Date.now()
+      });
+
+      usersSelectedUid = uid;
+      await loadUsers();
+      renderTeacherUsers(me);
+      alert("✅ Save สำเร็จ");
+    }catch(e){
+      alert("❌ " + errMsg(e));
+    }
+  };
+
+  $("usersDeleteBtn").onclick = async ()=>{
+    try{
+      const uid = $("u_uid").value.trim();
+      if (!uid) throw new Error("ใส่ UID ก่อน");
+      if (!confirm("ลบโปรไฟล์ Firestore ของ user นี้? (ไม่ลบบัญชี Auth)")) return;
+
+      await deleteDoc(doc(db, "users", uid));
+      usersSelectedUid = "";
+      await loadUsers();
+      renderTeacherUsers(me);
+      alert("✅ ลบโปรไฟล์แล้ว");
+    }catch(e){
+      alert("❌ " + errMsg(e));
+    }
+  };
 }
 
 /* =========================
-   12) Teacher - Scanner + Manual + Unsubmit + Status list
+   11) Teacher - SEND (Barcode + Manual + Camera)
    ========================= */
 let scanner = { running:false, stream:null, raf:null, assignmentId:null, classId:null };
 
@@ -787,14 +885,18 @@ function stopScanner() {
   }
 }
 
-function isLate(a) { return Date.now() > (a.dueAt || 0); }
+function parseStudentUid(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
 
-function studentStatusLabelFor(assignment, studentUid) {
-  const sub = findSubmission(assignment.id, studentUid);
-  if (sub) return { label: "✅ ส่งแล้ว", key:"SUBMITTED" };
-  if (isLate(assignment)) return { label: "⛔ เลยกำหนด", key:"LATE" };
-  return { label: "⏳ ค้าง", key:"PENDING" };
+  if (s.startsWith("{") && s.endsWith("}")) {
+    try { const obj = JSON.parse(s); if (obj?.uid) return String(obj.uid); } catch {}
+  }
+  if (s.startsWith("STU:")) return s.substring(4).trim();
+  return s;
 }
+function isLate(dueAt) { return !!dueAt && Date.now() > dueAt; }
 
 async function renderTeacherScan(me) {
   await loadAssignmentsFor("teacher");
@@ -805,7 +907,10 @@ async function renderTeacherScan(me) {
   const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name}</option>`).join("");
 
   $("teacherPanel").innerHTML = `
-    <h3>ส่งงาน (Scan หรือ Manual)</h3>
+    <h3>ส่งงาน (Barcode / Manual / Camera)</h3>
+    <div class="toast tiny">
+      แนะนำใช้ “เครื่องสแกนปืน”: คลิกช่อง “ยิงสแกน” แล้วสแกนต่อเนื่องได้เลย (Enter = ส่งอัตโนมัติ)
+    </div>
 
     <div class="two">
       <div>
@@ -820,14 +925,24 @@ async function renderTeacherScan(me) {
 
     <div class="hr"></div>
 
-    <h3>ส่งแบบ Manual (ไม่ต้องสแกน)</h3>
+    <h3>ส่งด้วยเครื่องสแกน (Barcode/QR gun)</h3>
+    <label>ยิงสแกนที่นี่ (รองรับ: JSON / STU:uid / uid)</label>
+    <input id="scannerInput" placeholder="คลิกที่นี่ แล้วใช้ปืนยิง..." autocomplete="off" />
 
+    <div class="row" style="margin-top:10px">
+      <button id="focusScanInputBtn" class="secondary">โฟกัสช่องสแกน</button>
+      <button id="toggleAutoSubmitBtn" class="secondary" data-on="1">Auto-submit: ON</button>
+      <button id="barcodeSubmitBtn">บันทึกจากช่องสแกน</button>
+      <button id="barcodeUnsubmitBtn" class="danger">ยกเลิกส่ง (จากช่องสแกน)</button>
+    </div>
+
+    <div class="hr"></div>
+
+    <h3>ส่งแบบ Manual (ไม่ต้องสแกน)</h3>
     <div class="two">
       <div>
         <label>เลือกนักเรียน</label>
-        <select id="scan_student">
-          <option value="">--เลือกนักเรียน--</option>
-        </select>
+        <select id="scan_student"><option value="">--เลือกนักเรียน--</option></select>
       </div>
       <div>
         <label>หรือกรอก UID</label>
@@ -837,33 +952,44 @@ async function renderTeacherScan(me) {
 
     <div class="row" style="margin-top:10px">
       <button id="manualSendBtn">📤 บันทึกส่ง (Manual)</button>
-      <button id="cancelSendBtn" class="danger">❌ ยกเลิกส่ง</button>
+      <button id="cancelSendBtn" class="danger">❌ ยกเลิกส่ง (Manual)</button>
+      <button id="reloadScanBtn" class="secondary">รีเฟรช</button>
     </div>
 
     <div class="hr"></div>
 
-    <h3>สแกน QR</h3>
-    <div class="row">
-      <button id="startScanBtn">📷 เริ่มสแกน</button>
-      <button id="stopScanBtn" class="secondary">หยุด</button>
-    </div>
-
-    <video id="video" playsinline></video>
+    <details>
+      <summary style="cursor:pointer;color:#cfe1ff;font-weight:700">สแกนด้วยกล้อง (ทางเลือก)</summary>
+      <div class="row" style="margin-top:10px">
+        <button id="startScanBtn">📷 เริ่มสแกน</button>
+        <button id="stopScanBtn" class="secondary">หยุด</button>
+      </div>
+      <video id="video" playsinline></video>
+      <canvas id="canvas" style="display:none"></canvas>
+    </details>
 
     <div class="hr"></div>
-    <div id="scanResult" class="toast">สถานะ: -</div>
+    <div id="scanResult" class="toast tiny">สถานะ: -</div>
+
+    <div class="hr"></div>
+    <h3>สถานะนักเรียนในห้อง (ตามงานที่เลือก)</h3>
+    <div id="scanStatusList" class="muted tiny">ยังไม่ได้เลือกงาน</div>
   `;
 
   const classSel = $("scan_class");
   const assignSel = $("scan_assignment");
   const studentSel = $("scan_student");
+  const uidInput = $("scan_uid");
+  const scanInput = $("scannerInput");
+  const result = $("scanResult");
+  const statusList = $("scanStatusList");
 
   function fillAssignments() {
     const classId = classSel.value;
-    const list = cacheAssignments.filter(a=>a.classId===classId);
+    const list = getAssignmentsForClass(classId).slice().sort((a,b)=>(a.dueAt||0)-(b.dueAt||0));
     assignSel.innerHTML =
       `<option value="">--เลือกงาน--</option>` +
-      list.map(a=>`<option value="${a.id}">${a.title}</option>`).join("");
+      list.map(a=>`<option value="${a.id}">${a.title} (Due ${fmtDateTime(a.dueAt)})</option>`).join("");
   }
 
   function fillStudents() {
@@ -871,94 +997,180 @@ async function renderTeacherScan(me) {
     const list = cacheUsers
       .filter(u=>u.role==="student" && u.classId===classId)
       .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
-
     studentSel.innerHTML =
       `<option value="">--เลือกนักเรียน--</option>` +
       list.map(s=>`<option value="${s.uid}">${s.studentNo||"-"} . ${s.name||s.email}</option>`).join("");
   }
 
-  classSel.onchange = ()=>{
-    fillAssignments();
-    fillStudents();
-  };
+  function renderStatusTable(classId, assignmentId) {
+    const assignment = cacheAssignments.find(a => a.id === assignmentId);
+    if (!assignment) { statusList.textContent = "ยังไม่ได้เลือกงาน"; return; }
 
-  fillAssignments();
-  fillStudents();
+    const students = cacheUsers
+      .filter(u => u.role === "student" && u.classId === classId)
+      .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
 
-  // =======================
-  // MANUAL SEND
-  // =======================
-  $("manualSendBtn").onclick = async ()=>{
-    try{
-      const classId = classSel.value;
-      const assignmentId = assignSel.value;
-      const uid = $("scan_uid").value.trim() || studentSel.value;
+    let submitted = 0, pending = 0, late = 0;
 
-      if(!classId) throw new Error("เลือก class");
-      if(!assignmentId) throw new Error("เลือกงาน");
-      if(!uid) throw new Error("เลือกนักเรียน");
+    const rows = students.map(s=>{
+      const sub = findSubmission(assignmentId, s.uid);
+      const lateFlag = !sub && isLate(assignment.dueAt);
+      let badge = `<span class="badge"><span class="dot warn"></span>ค้าง</span>`;
+      if (sub) { badge = `<span class="badge"><span class="dot ok"></span>ส่งแล้ว</span>`; submitted++; }
+      else if (lateFlag) { badge = `<span class="badge"><span class="dot bad"></span>เลยกำหนด</span>`; late++; }
+      else { pending++; }
 
-      const student = cacheUsers.find(u=>u.uid===uid);
-      if(!student) throw new Error("ไม่พบ user");
+      const detail = sub ? `${fmtDateTime(sub.submittedAt)} • ${sub.method||"-"}` : `Due ${fmtDateTime(assignment.dueAt)}`;
 
-      await upsertSubmission({
-        assignmentId,
-        studentUid: uid,
-        classId,
-        method:"MANUAL",
-        scannedBy: me.uid
-      });
+      return `
+        <tr>
+          <td><b>${s.studentNo ?? "-"}</b> ${s.name || s.email || ""}<div class="muted tiny">${s.email || ""}</div></td>
+          <td>${badge}<div class="muted tiny">${detail}</div></td>
+        </tr>
+      `;
+    }).join("");
 
-      $("scanResult").innerHTML =
-        `✅ ส่งแล้ว (Manual): ${student.studentNo||""} ${student.name||student.email}`;
+    statusList.innerHTML = `
+      <div class="row sp">
+        <div class="badge"><span class="dot ok"></span>ส่งแล้ว: <b>${submitted}</b></div>
+        <div class="badge"><span class="dot warn"></span>ค้าง: <b>${pending}</b></div>
+        <div class="badge"><span class="dot bad"></span>เลยกำหนด: <b>${late}</b></div>
+      </div>
+      <div class="hr"></div>
+      <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
+        <table>
+          <thead><tr><th style="min-width:260px">นักเรียน</th><th style="min-width:240px">สถานะ</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="2" class="muted">ยังไม่มีนักเรียน</td></tr>`}</tbody>
+        </table>
+      </div>
+    `;
+  }
 
-      await loadSubmissionsFor("teacher");
-
-    }catch(e){
-      alert("❌ "+errMsg(e));
-    }
-  };
-
-  // =======================
-  // CANCEL SEND
-  // =======================
-  $("cancelSendBtn").onclick = async ()=>{
-    try{
-      const assignmentId = assignSel.value;
-      const uid = $("scan_uid").value.trim() || studentSel.value;
-
-      if(!assignmentId || !uid) throw new Error("เลือกงานและนักเรียนก่อน");
-
-      if(!confirm("ยกเลิกส่งงาน?")) return;
-
-      await deleteSubmission(assignmentId, uid);
-      $("scanResult").innerHTML = `❌ ยกเลิกส่งแล้ว`;
-
-      await loadSubmissionsFor("teacher");
-
-    }catch(e){
-      alert("❌ "+errMsg(e));
-    }
-  };
-
-  // =======================
-  // SCAN QR
-  // =======================
-  $("startScanBtn").onclick = async ()=>{
+  async function submitForUid(studentUid, mode) {
     const classId = classSel.value;
     const assignmentId = assignSel.value;
-    if(!classId || !assignmentId){
-      alert("เลือก class และงานก่อน");
-      return;
-    }
+    if (!classId) throw new Error("เลือก class ก่อน");
+    if (!assignmentId) throw new Error("เลือกงานก่อน");
+    if (!studentUid) throw new Error("ไม่พบ uid จากข้อมูล");
+
+    const student = cacheUsers.find(u=>u.uid===studentUid && (u.role||"student")==="student");
+    if (!student) throw new Error("ไม่พบ student uid นี้ใน users");
+    if ((student.classId||"") !== classId) throw new Error("นักเรียนคนนี้ไม่ได้อยู่ในห้องที่เลือก");
+
+    await upsertSubmission({ assignmentId, studentUid, classId, method: mode, scannedBy: me.uid });
+    await loadSubmissionsFor("teacher");
+
+    result.innerHTML = `✅ ส่งแล้ว (${mode}): <b>${student.studentNo||"-"} . ${student.name||student.email}</b> • ${fmtDateTime(Date.now())}`;
+    renderStatusTable(classId, assignmentId);
+  }
+
+  async function unsubmitForUid(studentUid) {
+    const assignmentId = assignSel.value;
+    const classId = classSel.value;
+    if (!assignmentId) throw new Error("เลือกงานก่อน");
+    if (!studentUid) throw new Error("ไม่พบ uid จากข้อมูล");
+
+    const sub = findSubmission(assignmentId, studentUid);
+    if (!sub) { result.textContent = "ℹ️ ยังไม่มี submission"; return; }
+
+    await deleteSubmission(assignmentId, studentUid);
+    await loadSubmissionsFor("teacher");
+
+    result.innerHTML = `❌ ยกเลิกส่งแล้ว: <b>${studentUid}</b>`;
+    renderStatusTable(classId, assignmentId);
+  }
+
+  function init() {
+    fillAssignments();
+    fillStudents();
+    statusList.textContent = "ยังไม่ได้เลือกงาน";
+    result.textContent = "สถานะ: -";
+    setTimeout(()=>scanInput.focus(), 200);
+  }
+
+  classSel.onchange = () => {
+    fillAssignments(); fillStudents();
+    statusList.textContent = "ยังไม่ได้เลือกงาน";
+    result.textContent = "สถานะ: -";
+    uidInput.value = ""; scanInput.value = "";
+  };
+  assignSel.onchange = () => renderStatusTable(classSel.value, assignSel.value);
+
+  $("reloadScanBtn").onclick = async ()=>{
+    await loadAssignmentsFor("teacher");
+    await loadSubmissionsFor("teacher");
+    await loadUsers();
+    await loadClasses();
+    renderTeacherScan(me);
+  };
+
+  $("focusScanInputBtn").onclick = ()=> scanInput.focus();
+  $("toggleAutoSubmitBtn").onclick = (e)=>{
+    const btn = e.currentTarget;
+    const on = btn.getAttribute("data-on")==="1";
+    btn.setAttribute("data-on", on ? "0" : "1");
+    btn.textContent = `Auto-submit: ${on ? "OFF" : "ON"}`;
+  };
+
+  async function handleBarcodeSubmit() {
+    const uid = parseStudentUid(scanInput.value);
+    await submitForUid(uid, "BARCODE");
+    scanInput.value = "";
+    scanInput.focus();
+  }
+  async function handleBarcodeUnsubmit() {
+    const uid = parseStudentUid(scanInput.value);
+    if (!confirm("ยืนยันยกเลิกส่ง?")) return;
+    await unsubmitForUid(uid);
+    scanInput.value = "";
+    scanInput.focus();
+  }
+
+  $("barcodeSubmitBtn").onclick = async ()=>{
+    try { await handleBarcodeSubmit(); }
+    catch(e){ alert("❌ "+errMsg(e)); scanInput.select(); }
+  };
+  $("barcodeUnsubmitBtn").onclick = async ()=>{
+    try { await handleBarcodeUnsubmit(); }
+    catch(e){ alert("❌ "+errMsg(e)); scanInput.select(); }
+  };
+
+  scanInput.addEventListener("keydown", async (ev)=>{
+    if (ev.key !== "Enter") return;
+    const on = $("toggleAutoSubmitBtn").getAttribute("data-on")==="1";
+    if (!on) return;
+    ev.preventDefault();
+    try { await handleBarcodeSubmit(); }
+    catch(e){ alert("❌ "+errMsg(e)); scanInput.select(); }
+  });
+
+  $("manualSendBtn").onclick = async ()=>{
+    try{
+      const uid = uidInput.value.trim() || studentSel.value;
+      await submitForUid(uid, "MANUAL");
+    }catch(e){ alert("❌ "+errMsg(e)); }
+  };
+  $("cancelSendBtn").onclick = async ()=>{
+    try{
+      const uid = uidInput.value.trim() || studentSel.value;
+      if (!uid) throw new Error("เลือกนักเรียนก่อน");
+      if (!confirm("ยืนยันยกเลิกส่ง?")) return;
+      await unsubmitForUid(uid);
+    }catch(e){ alert("❌ "+errMsg(e)); }
+  };
+
+  $("startScanBtn")?.addEventListener("click", async ()=>{
+    const classId = classSel.value;
+    const assignmentId = assignSel.value;
+    if(!classId || !assignmentId){ alert("เลือก class และงานก่อน"); return; }
     scanner.classId = classId;
     scanner.assignmentId = assignmentId;
     await startScanner(me);
-  };
+  });
+  $("stopScanBtn")?.addEventListener("click", ()=>stopScanner());
 
-  $("stopScanBtn").onclick = ()=>stopScanner();
+  init();
 }
-
 
 async function startScanner(me) {
   if (scanner.running) return;
@@ -974,8 +1186,6 @@ async function startScanner(me) {
     await video.play();
 
     scanner.running = true;
-    $("startScanBtn").disabled = true;
-    $("stopScanBtn").disabled = false;
 
     const tick = async () => {
       if (!scanner.running) return;
@@ -989,35 +1199,26 @@ async function startScanner(me) {
         const code = window.jsQR(img.data, img.width, img.height, { inversionAttempts:"dontInvert" });
 
         if (code?.data) {
-          let obj = null;
-          try { obj = JSON.parse(code.data); } catch {}
+          const uid = parseStudentUid(code.data);
+          try {
+            const classId = scanner.classId;
+            const assignmentId = scanner.assignmentId;
 
-          if (obj?.type === "STUDENT" && obj.uid) {
-            const student = cacheUsers.find(u=>u.uid===obj.uid && u.role==="student" && u.classId===scanner.classId);
-            if (!student) {
-              $("scanResult").textContent = "⚠️ QR ถูกต้อง แต่ไม่ใช่นักเรียนในห้องที่เลือก";
-            } else {
-              await upsertSubmission({
-                assignmentId: scanner.assignmentId,
-                studentUid: student.uid,
-                classId: scanner.classId,
-                method: "QR",
-                scannedBy: me.uid
-              });
+            const student = cacheUsers.find(u=>u.uid===uid && (u.role||"student")==="student" && (u.classId||"")===classId);
+            if (!student) { $("scanResult").textContent = "⚠️ QR ถูกต้อง แต่ไม่ใช่นักเรียนในห้องที่เลือก"; }
+            else {
+              await upsertSubmission({ assignmentId, studentUid: student.uid, classId, method:"QR", scannedBy: me.uid });
               await loadSubmissionsFor("teacher");
-              $("scanResult").innerHTML = `✅ บันทึกส่งแล้ว: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b> เวลา ${fmtDateTime(Date.now())}`;
+              $("scanResult").innerHTML = `✅ ส่งแล้ว (QR): <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b> • ${fmtDateTime(Date.now())}`;
 
-              // refresh dropdown/table if current selections match
               const classSel = $("scan_class");
               const assignSel = $("scan_assignment");
-              if (classSel && assignSel && classSel.value === scanner.classId && assignSel.value === scanner.assignmentId) {
-                // refresh UI list quickly
-                const fakeEvent = new Event("change");
-                assignSel.dispatchEvent(fakeEvent);
+              if (classSel && assignSel && classSel.value === classId && assignSel.value === assignmentId) {
+                assignSel.dispatchEvent(new Event("change"));
               }
             }
-          } else {
-            $("scanResult").textContent = "⚠️ QR ไม่ถูกต้องสำหรับระบบนี้";
+          } catch (e) {
+            $("scanResult").textContent = "❌ " + errMsg(e);
           }
         }
       }
@@ -1029,40 +1230,12 @@ async function startScanner(me) {
   } catch (e) {
     alert("เปิดกล้องไม่สำเร็จ: อนุญาต Permission หรือใช้ HTTPS");
     stopScanner();
-    $("stopScanBtn").disabled = true;
-    $("startScanBtn").disabled = false;
   }
 }
 
 /* =========================
-   13) Student (read-only)
+   12) Student dashboard (filters + due soon)
    ========================= */
-function statusForStudent(assignment, studentUid) {
-  const sub = cacheSubmissions.find(s => s.assignmentId === assignment.id && s.studentUid === studentUid);
-  if (sub) return { label:"ส่งแล้ว", cls:"ok", detail:`QR/Manual • ${fmtDateTime(sub.submittedAt)} (${sub.method || "-"})` };
-  if (isLate(assignment)) return { label:"ค้าง (เลยกำหนด)", cls:"bad", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
-  return { label:"ค้าง", cls:"warn", detail:`Due ${fmtDateTime(assignment.dueAt)}` };
-}
-
-function renderStudentProgressBar(done, total) {
-  const pct = total ? Math.round((done / total) * 100) : 0;
-  return `
-    <div class="row sp">
-      <div class="badge"><span class="dot ok"></span>ส่งแล้ว: <b>${done}</b></div>
-      <div class="badge"><span class="dot warn"></span>ค้าง: <b>${total - done}</b></div>
-      <div class="badge"><span class="dot"></span>รวม: <b>${total}</b></div>
-    </div>
-    <div class="hr"></div>
-    <div class="toast">
-      <div class="muted tiny">ความคืบหน้า</div>
-      <div style="height:10px;background:#0c152b;border:1px solid var(--line);border-radius:999px;overflow:hidden">
-        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#44d19d,#2a5bd7)"></div>
-      </div>
-      <div class="muted tiny" style="margin-top:8px">${pct}% ของงานทั้งหมด</div>
-    </div>
-  `;
-}
-
 async function renderStudent(me) {
   await loadClasses();
 
@@ -1078,7 +1251,7 @@ async function renderStudent(me) {
       <div class="badge"><span class="dot warn"></span>ยังไม่ได้กำหนดห้องเรียน กรุณาแจ้งครูให้ assign</div>
     `;
     $("studentStatus").innerHTML = `
-      <div class="toast tiny"><b>หมายเหตุ:</b> ระบบนี้ “ครูสแกน QR อย่างเดียว” นักเรียนไม่สามารถกดส่งเอง</div>
+      <div class="toast tiny"><b>หมายเหตุ:</b> ระบบนี้ “ครูสแกน/Manual อย่างเดียว” นักเรียนไม่สามารถกดส่งเอง</div>
     `;
     return;
   }
@@ -1088,64 +1261,142 @@ async function renderStudent(me) {
 
   const cls = cacheClasses.find(c => c.id === me.classId);
   const assignments = cacheAssignments.slice().sort((a,b)=> (a.dueAt||0) - (b.dueAt||0));
+  const now = Date.now();
+  const dueSoonMs = DUE_SOON_HOURS * 60 * 60 * 1000;
 
-  let done = 0;
-  for (const a of assignments) {
-    if (cacheSubmissions.find(s => s.assignmentId === a.id && s.studentUid === me.uid)) done++;
-  }
+  const items = assignments.map(a => {
+    const sub = cacheSubmissions.find(s => s.assignmentId === a.id && s.studentUid === me.uid) || null;
+    const dueAt = a.dueAt || 0;
+    const late = !sub && dueAt && now > dueAt;
+    const dueSoon = !sub && dueAt && (dueAt - now) > 0 && (dueAt - now) <= dueSoonMs;
+    const pending = !sub;
+    return { a, sub, late, dueSoon, pending };
+  });
 
-  const rows = assignments.map(a => {
-    const st = statusForStudent(a, me.uid);
+  const total = items.length;
+  const done = items.filter(x=>!!x.sub).length;
+  const pendingCount = items.filter(x=>x.pending && !x.late).length;
+  const lateCount = items.filter(x=>x.pending && x.late).length;
+  const dueSoonCount = items.filter(x=>x.dueSoon).length;
+  const pct = total ? Math.round((done/total) * 100) : 0;
+
+  const filtered = items.filter(x => {
+    if (studentFilter === "all") return true;
+    if (studentFilter === "pending") return x.pending && !x.late;
+    if (studentFilter === "late") return x.pending && x.late;
+    if (studentFilter === "dueSoon") return x.dueSoon;
+    if (studentFilter === "submitted") return !!x.sub;
+    return true;
+  });
+
+  const btn = (key, label, count) => {
+    const active = studentFilter === key ? "style='outline:2px solid #7cc2ff'" : "";
+    return `<button class="secondary" data-sfilter="${key}" ${active}>${label} (${count})</button>`;
+  };
+
+  const rows = filtered.map(x => {
+    const badge = x.sub
+      ? `<span class="badge"><span class="dot ok"></span>ส่งแล้ว</span>`
+      : x.late
+        ? `<span class="badge"><span class="dot bad"></span>ค้าง (เลยกำหนด)</span>`
+        : x.dueSoon
+          ? `<span class="badge"><span class="dot warn"></span>ใกล้ถึงกำหนด</span>`
+          : `<span class="badge"><span class="dot warn"></span>ค้าง</span>`;
+
+    const detail = x.sub
+      ? `บันทึกแล้ว • ${fmtDateTime(x.sub.submittedAt)} (${x.sub.method || "-"})`
+      : `กำหนดส่ง ${fmtDateTime(x.a.dueAt)}`;
+
     return `
       <tr>
-        <td>
-          <b>${a.title}</b>
-          <div class="muted tiny">${a.detail || ""}</div>
-        </td>
-        <td>
-          <span class="badge"><span class="dot ${st.cls}"></span>${st.label}</span>
-          <div class="muted tiny">${st.detail}</div>
-        </td>
+        <td><b>${x.a.title}</b><div class="muted tiny">${x.a.detail || ""}</div></td>
+        <td>${badge}<div class="muted tiny">${detail}</div></td>
       </tr>
     `;
   }).join("");
 
+  const dueSoonList = items
+    .filter(x=>x.dueSoon)
+    .slice(0, 5)
+    .map(x=>`<li style="margin:6px 0"><b>${x.a.title}</b> <span class="muted tiny">• Due ${fmtDateTime(x.a.dueAt)}</span></li>`)
+    .join("");
+
   $("studentPanel").innerHTML = `
     <div class="row sp">
-      <div class="muted tiny">
-        ห้อง: <b>${cls ? cls.name : me.classId}</b> • เลขที่: <b>${me.studentNo ?? "-"}</b>
-      </div>
+      <div class="muted tiny">ห้อง: <b>${cls ? cls.name : me.classId}</b> • เลขที่: <b>${me.studentNo ?? "-"}</b></div>
       <div class="badge"><span class="dot"></span>Read-only</div>
     </div>
 
     <div class="hr"></div>
 
+    <div class="toast">
+      <div class="row sp">
+        <div class="badge"><span class="dot ok"></span>ส่งแล้ว: <b>${done}</b></div>
+        <div class="badge"><span class="dot warn"></span>ค้าง: <b>${pendingCount}</b></div>
+        <div class="badge"><span class="dot bad"></span>เลยกำหนด: <b>${lateCount}</b></div>
+        <div class="badge"><span class="dot warn"></span>ใกล้ถึงกำหนด: <b>${dueSoonCount}</b></div>
+        <div class="badge"><span class="dot"></span>รวม: <b>${total}</b></div>
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="muted tiny">Progress</div>
+      <div style="height:10px;background:#0c152b;border:1px solid var(--line);border-radius:999px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#44d19d,#2a5bd7)"></div>
+      </div>
+      <div class="muted tiny" style="margin-top:8px">${pct}% ของงานทั้งหมด</div>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="toast tiny">
+      <div class="row sp">
+        <div><b>งานใกล้ถึงกำหนด (ภายใน ${DUE_SOON_HOURS} ชม.)</b></div>
+        <button class="secondary" id="goDueSoonBtn">ดูเฉพาะใกล้ถึงกำหนด</button>
+      </div>
+      <div class="hr"></div>
+      ${dueSoonList ? `<ul style="margin:0;padding-left:18px">${dueSoonList}</ul>` : `<span class="muted">ไม่มี</span>`}
+    </div>
+
+    <div class="hr"></div>
+
+    <h3>งานของฉัน</h3>
+    <div class="row" style="margin-bottom:10px">
+      ${btn("all","ทั้งหมด", total)}
+      ${btn("pending","ค้าง", pendingCount)}
+      ${btn("late","เลยกำหนด", lateCount)}
+      ${btn("dueSoon",`ใกล้ถึงกำหนด ${DUE_SOON_HOURS} ชม.`, dueSoonCount)}
+      ${btn("submitted","ส่งแล้ว", done)}
+    </div>
+
     <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
       <table>
-        <thead>
-          <tr>
-            <th style="min-width:260px">งาน</th>
-            <th style="min-width:220px">สถานะ</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows || `<tr><td colspan="2" class="muted">ยังไม่มีงานในห้องนี้</td></tr>`}
-        </tbody>
+        <thead><tr><th style="min-width:260px">งาน</th><th style="min-width:240px">สถานะ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="2" class="muted">ไม่มีรายการใน filter นี้</td></tr>`}</tbody>
       </table>
     </div>
   `;
 
   $("studentStatus").innerHTML = `
-    ${renderStudentProgressBar(done, assignments.length)}
-    <div class="hr"></div>
     <div class="toast tiny">
-      <b>การส่งงาน:</b> ครูจะบันทึก “ส่งแล้ว” เมื่อสแกน QR หรือ Manual
+      <b>หมายเหตุ:</b> นักเรียนดูสถานะได้เท่านั้น • ครูจะบันทึก “ส่งแล้ว” เมื่อสแกน QR / Barcode หรือ Manual
     </div>
   `;
+
+  document.querySelectorAll("[data-sfilter]").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      studentFilter = b.getAttribute("data-sfilter");
+      renderStudent(me);
+    });
+  });
+  $("goDueSoonBtn").addEventListener("click", ()=>{
+    studentFilter = "dueSoon";
+    renderStudent(me);
+  });
 }
 
 /* =========================
-   14) Teacher main render
+   13) Teacher main render
    ========================= */
 async function renderTeacher() {
   stopScanner();
@@ -1163,12 +1414,12 @@ async function renderTeacher() {
   if (teacherTab === "tasks") await renderTeacherTasks(me);
   if (teacherTab === "qr") await renderTeacherQR(me);
   if (teacherTab === "scan") await renderTeacherScan(me);
-  if (teacherTab === "users") renderUsersTable(me);
+  if (teacherTab === "users") await renderTeacherUsers(me);
   if (teacherTab === "classes") renderClasses(me);
 }
 
 /* =========================
-   15) App boot
+   14) Boot
    ========================= */
 onAuthStateChanged(auth, async (user) => {
   stopScanner();
@@ -1195,7 +1446,7 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   const me2 = await getMyProfile(user.uid);
-  setWho(`${me2.role==="teacher" ? "👩‍🏫" : "👩‍🎓"} ${me2.email || ""}`);
+  setWho(`${(me2.role==="teacher") ? "👩‍🏫" : "👩‍🎓"} ${me2.email || ""}`);
 
   if (me2.role === "teacher") {
     showOnly("teacher");
