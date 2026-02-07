@@ -3,18 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Homework Tracker (GitHub Pages)</title>
-
-  <!-- QR generate -->
-  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-  <!-- QR scan -->
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <title>Homework Tracker (Firebase)</title>
 
   <style>
     :root{--bg:#0b1220;--card:#111a2e;--muted:#8aa0c7;--text:#e8f0ff;--line:#253355;--ok:#44d19d;--warn:#ffcc66;--bad:#ff6b6b;--btn:#2a5bd7}
     *{box-sizing:border-box}
     body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;color:var(--text);background:linear-gradient(120deg,#081021,#0b1220)}
-    a{color:#a9c6ff}
     .wrap{max-width:1100px;margin:0 auto;padding:18px}
     header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:14px}
     .brand{display:flex;gap:10px;align-items:center}
@@ -30,7 +24,6 @@
     h3{margin:0 0 10px;font-size:16px;color:#cfe1ff}
     label{display:block;font-size:12px;color:var(--muted);margin:10px 0 6px}
     input,select,textarea{width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:#0c152b;color:var(--text);outline:none}
-    textarea{min-height:90px;resize:vertical}
     button{border:0;border-radius:12px;padding:10px 12px;background:var(--btn);color:white;font-weight:700;cursor:pointer}
     button.secondary{background:#1a2a4b;border:1px solid var(--line);color:#dbe7ff}
     button.danger{background:#7a1d2a}
@@ -40,21 +33,20 @@
     table{width:100%;border-collapse:collapse}
     th,td{border-bottom:1px solid var(--line);padding:10px 8px;text-align:left;font-size:13px}
     th{color:#cfe1ff;font-size:12px}
+    .right{text-align:right}
     .badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);display:inline-flex;gap:6px;align-items:center}
     .dot{width:8px;height:8px;border-radius:99px;background:var(--muted)}
     .ok{background:var(--ok)} .warn{background:var(--warn)} .bad{background:var(--bad)}
-    .progress{height:10px;background:#0c152b;border:1px solid var(--line);border-radius:999px;overflow:hidden}
-    .bar{height:100%;background:linear-gradient(90deg,#44d19d,#2a5bd7);width:0%}
-    .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    @media(max-width:900px){.two{grid-template-columns:1fr}}
-    .qr-box{display:flex;gap:14px;flex-wrap:wrap}
-    .qr-item{width:220px;padding:12px;border-radius:16px;border:1px solid var(--line);background:#0c152b}
-    .qr-item .name{font-weight:800;margin-bottom:6px}
-    video{width:100%;border-radius:16px;border:1px solid var(--line);background:#000}
-    canvas{display:none}
     .toast{padding:10px 12px;border:1px solid var(--line);border-radius:14px;background:#0c152b}
     .tiny{font-size:12px}
-    .right{text-align:right}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media(max-width:900px){.two{grid-template-columns:1fr}}
+
+    /* modal */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:18px;z-index:50}
+    .modal{max-width:760px;width:100%;background:rgba(17,26,46,.98);border:1px solid var(--line);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.5);padding:14px}
+    .modal .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+    .xbtn{background:#1a2a4b;border:1px solid var(--line);color:#dbe7ff;padding:8px 10px;border-radius:12px}
   </style>
 </head>
 
@@ -65,7 +57,7 @@
         <div class="logo"></div>
         <div>
           <div class="title">Homework Tracker</div>
-          <div class="muted tiny">Static Web App (GitHub Pages)</div>
+          <div class="muted tiny">Firebase • GitHub Pages</div>
         </div>
       </div>
       <div class="row">
@@ -78,32 +70,36 @@
     <section id="viewLogin" class="grid">
       <div class="card">
         <h2>เข้าสู่ระบบ</h2>
-        <div class="muted tiny">เดโมนี้เก็บข้อมูลในเบราว์เซอร์ (localStorage) เหมาะสำหรับ POC / ทดลองใช้</div>
 
-        <label>เลือกผู้ใช้เดโม</label>
-        <select id="demoUser"></select>
+        <label>Email</label>
+        <input id="email" type="email" placeholder="name@example.com" />
+
+        <label>Password</label>
+        <input id="pass" type="password" placeholder="••••••••" />
 
         <div class="row" style="margin-top:12px">
           <button id="loginBtn">Login</button>
-          <!-- <button id="resetBtn" class="secondary">รีเซ็ตข้อมูลเดโม</button> -->
+          <button id="signupBtn" class="secondary">Sign up (นักเรียนสมัครเอง)</button>
         </div>
 
         <div class="hr"></div>
         <div class="toast tiny">
-          <b>วิธีใช้งาน QR:</b> ครูไปที่เมนู “QR นักเรียน” เพื่อพิมพ์ QR แปะสมุด → เวลารับงาน เลือก “งาน” แล้วกด “เริ่มสแกน” → สแกนจากสมุดเพื่อบันทึกส่ง
+          ถ้ายังไม่มีบัญชี: กด Sign up → ระบบจะสร้าง users/{uid} เป็น role=student อัตโนมัติ แล้วครูจะมา assign ห้อง/เลขที่ในหน้า “Users”
         </div>
+
+        <div id="loginMsg" class="muted tiny" style="margin-top:10px"></div>
       </div>
 
       <div class="card">
-        <h2>ฟีเจอร์</h2>
+        <h2>หมายเหตุ</h2>
         <ul class="muted">
-          <li>ครู: สร้างงาน, ตรวจสถานะส่ง/ค้าง, สแกน QR เพื่อ mark “ส่งแล้ว”</li>
-          <li>นักเรียน: ดูงานทั้งหมด, สถานะ, progress bar</li>
-          <li>พิมพ์/แสดง QR ของนักเรียนเพื่อแปะสมุด</li>
+          <li>ครูต้องมี role=teacher ใน Firestore (ตั้งครั้งแรกด้านล่าง)</li>
+          <li>ข้อมูลใช้ร่วมกันได้ทุกเครื่อง เพราะอยู่บน Firestore</li>
         </ul>
+
         <div class="hr"></div>
-        <div class="tiny muted">
-          *หมายเหตุ: กล้องสแกนทำงานบน HTTPS เท่านั้น (GitHub Pages OK)
+        <div class="toast tiny">
+          <b>ตั้งครูครั้งแรก:</b> สมัครด้วยอีเมลครู → เข้า Firestore → users/{uid} → เปลี่ยน role เป็น “teacher”
         </div>
       </div>
     </section>
@@ -112,20 +108,17 @@
     <section id="viewTeacher" style="display:none" class="grid">
       <div class="card">
         <div class="row sp">
-          <h2>แดชบอร์ดครู</h2>
+          <h2>Teacher Console</h2>
           <div class="row">
-            <button id="navTeacherDashboard" class="secondary">Dashboard</button>
-            <button id="navTeacherTasks" class="secondary">จัดการงาน</button>
-            <button id="navTeacherQR" class="secondary">QR นักเรียน</button>
-            <button id="navTeacherScan" class="secondary">สแกนส่งงาน</button>
+            <button id="navTeacherUsers" class="secondary">Users</button>
+            <button id="navTeacherClasses" class="secondary">Classes</button>
           </div>
         </div>
-
         <div id="teacherPanel"></div>
       </div>
 
       <div class="card">
-        <h2>สรุปเร็ว</h2>
+        <h2>Quick</h2>
         <div id="teacherQuick"></div>
       </div>
     </section>
@@ -133,25 +126,74 @@
     <!-- STUDENT -->
     <section id="viewStudent" style="display:none" class="grid">
       <div class="card">
-        <div class="row sp">
-          <h2>งานของฉัน</h2>
-          <div class="row">
-            <button id="navStudentHome" class="secondary">รายการงาน</button>
-            <button id="navStudentProfile" class="secondary">โปรไฟล์</button>
-          </div>
-        </div>
-
+        <h2>Student</h2>
         <div id="studentPanel"></div>
       </div>
-
       <div class="card">
-        <h2>Progress</h2>
-        <div id="studentProgress"></div>
+        <h2>Status</h2>
+        <div id="studentStatus"></div>
       </div>
     </section>
-
   </div>
 
-  <script src="./app.js"></script>
+  <!-- Modal for Add/Edit User -->
+  <div id="userModalBackdrop" class="modal-backdrop">
+    <div class="modal">
+      <div class="head">
+        <div>
+          <div style="font-weight:800" id="userModalTitle">Add User</div>
+          <div class="muted tiny" id="userModalSub">จัดการข้อมูลผู้ใช้</div>
+        </div>
+        <button id="closeUserModal" class="xbtn">ปิด</button>
+      </div>
+
+      <div class="hr"></div>
+
+      <div class="two">
+        <div>
+          <label>UID (อ่านอย่างเดียว)</label>
+          <input id="m_uid" disabled />
+        </div>
+        <div>
+          <label>Email (อ่านอย่างเดียว)</label>
+          <input id="m_email" disabled />
+        </div>
+      </div>
+
+      <div class="two">
+        <div>
+          <label>ชื่อ</label>
+          <input id="m_name" placeholder="เช่น นักเรียน เอ" />
+        </div>
+        <div>
+          <label>Role</label>
+          <select id="m_role">
+            <option value="student">student</option>
+            <option value="teacher">teacher</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="two">
+        <div>
+          <label>Class</label>
+          <select id="m_classId"></select>
+        </div>
+        <div>
+          <label>เลขที่ (studentNo)</label>
+          <input id="m_studentNo" type="number" min="1" placeholder="เช่น 10" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px">
+        <button id="saveUserBtn">บันทึก</button>
+        <button id="deleteUserBtn" class="danger" style="display:none">ลบผู้ใช้</button>
+      </div>
+
+      <div id="modalMsg" class="muted tiny" style="margin-top:10px"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
