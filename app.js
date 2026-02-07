@@ -802,291 +802,163 @@ async function renderTeacherScan(me) {
   await loadUsers();
   await loadClasses();
 
-  const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name} (${c.id})</option>`).join("");
+  const classOptions = cacheClasses.map(c=>`<option value="${c.id}">${c.name}</option>`).join("");
 
   $("teacherPanel").innerHTML = `
-    <h3>สแกน/ส่งงาน</h3>
-    <div class="toast tiny">
-      เลือก Class → เลือกงาน → (สแกน QR หรือ Manual) • มีปุ่ม “ยกเลิกส่ง” ได้
-    </div>
+    <h3>ส่งงาน (Scan หรือ Manual)</h3>
 
     <div class="two">
       <div>
-        <label>Class</label>
-        <select id="scan_class">${classOptions || `<option value="">ไม่มี class</option>`}</select>
+        <label>เลือกห้อง</label>
+        <select id="scan_class">${classOptions}</select>
       </div>
       <div>
         <label>เลือกงาน</label>
-        <select id="scan_assignment"><option value="">-- เลือกงาน --</option></select>
+        <select id="scan_assignment"><option value="">--เลือกงาน--</option></select>
       </div>
     </div>
 
-    <div class="two" style="margin-top:10px">
-      <div>
-        <label>Manual: เลือกนักเรียน (มีสถานะ)</label>
-        <select id="scan_student"><option value="">-- เลือกนักเรียน --</option></select>
-        <div class="muted tiny" style="margin-top:6px">
-          ตัวอย่าง: “✅ 10 . สมชาย” / “⛔ 5 . สมหญิง”
-        </div>
-      </div>
+    <div class="hr"></div>
 
+    <h3>ส่งแบบ Manual (ไม่ต้องสแกน)</h3>
+
+    <div class="two">
       <div>
-        <label>Manual: หรือกรอก Student UID</label>
-        <input id="scan_uid" placeholder="วาง uid จากหน้า Users (optional)" />
-        <div class="muted tiny" style="margin-top:6px">
-          ถ้ากรอก UID จะใช้ UID นี้เป็นหลัก (override dropdown)
-        </div>
+        <label>เลือกนักเรียน</label>
+        <select id="scan_student">
+          <option value="">--เลือกนักเรียน--</option>
+        </select>
+      </div>
+      <div>
+        <label>หรือกรอก UID</label>
+        <input id="scan_uid" placeholder="วาง uid นักเรียน" />
       </div>
     </div>
 
     <div class="row" style="margin-top:10px">
-      <button id="startScanBtn">เริ่มสแกน</button>
-      <button id="stopScanBtn" class="secondary" disabled>หยุดสแกน</button>
-
-      <button id="manualSubmitBtn" class="secondary">บันทึกส่ง (Manual)</button>
-      <button id="unsubmitBtn" class="danger">ยกเลิกส่ง</button>
-
-      <button id="reloadScanBtn" class="secondary">รีเฟรช</button>
+      <button id="manualSendBtn">📤 บันทึกส่ง (Manual)</button>
+      <button id="cancelSendBtn" class="danger">❌ ยกเลิกส่ง</button>
     </div>
 
     <div class="hr"></div>
+
+    <h3>สแกน QR</h3>
+    <div class="row">
+      <button id="startScanBtn">📷 เริ่มสแกน</button>
+      <button id="stopScanBtn" class="secondary">หยุด</button>
+    </div>
+
     <video id="video" playsinline></video>
-    <canvas id="canvas" style="display:none"></canvas>
 
     <div class="hr"></div>
-    <div id="scanResult" class="toast tiny">เลือกงาน/นักเรียนเพื่อเริ่ม</div>
-
-    <div class="hr"></div>
-    <h3>สถานะนักเรียนในห้อง (ตามงานที่เลือก)</h3>
-    <div id="scanStatusList" class="muted tiny">ยังไม่ได้เลือกงาน</div>
+    <div id="scanResult" class="toast">สถานะ: -</div>
   `;
 
   const classSel = $("scan_class");
-  const assignmentSel = $("scan_assignment");
+  const assignSel = $("scan_assignment");
   const studentSel = $("scan_student");
-  const uidInput = $("scan_uid");
-  const result = $("scanResult");
-  const statusList = $("scanStatusList");
 
-  const fillAssignments = (classId) => {
-    const assigns = getAssignmentsForClass(classId);
-    assignmentSel.innerHTML =
-      `<option value="">-- เลือกงาน --</option>` +
-      assigns
-        .slice()
-        .sort((a,b)=>(a.dueAt||0)-(b.dueAt||0))
-        .map(a => `<option value="${a.id}">${a.title} (Due ${fmtDateTime(a.dueAt)})</option>`).join("");
-  };
+  function fillAssignments() {
+    const classId = classSel.value;
+    const list = cacheAssignments.filter(a=>a.classId===classId);
+    assignSel.innerHTML =
+      `<option value="">--เลือกงาน--</option>` +
+      list.map(a=>`<option value="${a.id}">${a.title}</option>`).join("");
+  }
 
-  const fillStudentsWithStatus = (classId, assignmentId) => {
-    const students = cacheUsers
-      .filter(u => u.role === "student" && u.classId === classId)
+  function fillStudents() {
+    const classId = classSel.value;
+    const list = cacheUsers
+      .filter(u=>u.role==="student" && u.classId===classId)
       .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
-
-    const assignment = cacheAssignments.find(a => a.id === assignmentId);
-    if (!assignment) {
-      studentSel.innerHTML = `<option value="">-- เลือกนักเรียน --</option>`;
-      return;
-    }
 
     studentSel.innerHTML =
-      `<option value="">-- เลือกนักเรียน --</option>` +
-      students.map(s => {
-        const st = studentStatusLabelFor(assignment, s.uid).label;
-        return `<option value="${s.uid}">${st} • ${s.studentNo ?? "-"} . ${s.name || s.email}</option>`;
-      }).join("");
+      `<option value="">--เลือกนักเรียน--</option>` +
+      list.map(s=>`<option value="${s.uid}">${s.studentNo||"-"} . ${s.name||s.email}</option>`).join("");
+  }
+
+  classSel.onchange = ()=>{
+    fillAssignments();
+    fillStudents();
   };
 
-  const renderStatusTable = (classId, assignmentId) => {
-    const assignment = cacheAssignments.find(a => a.id === assignmentId);
-    if (!assignment) { statusList.textContent = "ยังไม่ได้เลือกงาน"; return; }
+  fillAssignments();
+  fillStudents();
 
-    const students = cacheUsers
-      .filter(u => u.role === "student" && u.classId === classId)
-      .sort((a,b)=>(a.studentNo||999)-(b.studentNo||999));
+  // =======================
+  // MANUAL SEND
+  // =======================
+  $("manualSendBtn").onclick = async ()=>{
+    try{
+      const classId = classSel.value;
+      const assignmentId = assignSel.value;
+      const uid = $("scan_uid").value.trim() || studentSel.value;
 
-    let submitted = 0, pending = 0, late = 0;
+      if(!classId) throw new Error("เลือก class");
+      if(!assignmentId) throw new Error("เลือกงาน");
+      if(!uid) throw new Error("เลือกนักเรียน");
 
-    const rows = students.map(s=>{
-      const sub = findSubmission(assignmentId, s.uid);
-      const lateFlag = !sub && isLate(assignment);
-      let badge = `<span class="badge"><span class="dot warn"></span>ค้าง</span>`;
-      if (sub) { badge = `<span class="badge"><span class="dot ok"></span>ส่งแล้ว</span>`; submitted++; }
-      else if (lateFlag) { badge = `<span class="badge"><span class="dot bad"></span>เลยกำหนด</span>`; late++; }
-      else { pending++; }
-
-      const detail = sub ? `${fmtDateTime(sub.submittedAt)} • ${sub.method||"-"}` : `Due ${fmtDateTime(assignment.dueAt)}`;
-
-      return `
-        <tr>
-          <td><b>${s.studentNo ?? "-"}</b> ${s.name || s.email || ""}<div class="muted tiny">${s.email || ""}</div></td>
-          <td>${badge}<div class="muted tiny">${detail}</div></td>
-        </tr>
-      `;
-    }).join("");
-
-    statusList.innerHTML = `
-      <div class="row sp">
-        <div class="badge"><span class="dot ok"></span>ส่งแล้ว: <b>${submitted}</b></div>
-        <div class="badge"><span class="dot warn"></span>ค้าง: <b>${pending}</b></div>
-        <div class="badge"><span class="dot bad"></span>เลยกำหนด: <b>${late}</b></div>
-      </div>
-      <div class="hr"></div>
-      <div style="overflow:auto;border:1px solid var(--line);border-radius:14px">
-        <table>
-          <thead><tr><th style="min-width:260px">นักเรียน</th><th style="min-width:240px">สถานะ</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="2" class="muted">ยังไม่มีนักเรียน</td></tr>`}</tbody>
-        </table>
-      </div>
-    `;
-  };
-
-  const getSelected = () => {
-    const classId = classSel.value;
-    const assignmentId = assignmentSel.value;
-    const rawUid = uidInput.value.trim();
-    const chosenUid = studentSel.value;
-    const studentUid = rawUid || chosenUid;
-    return { classId, assignmentId, studentUid };
-  };
-
-  const manualPreview = () => {
-    const { classId, assignmentId, studentUid } = getSelected();
-    if (!classId || !assignmentId || !studentUid) {
-      result.textContent = "เลือกงาน/นักเรียนเพื่อเริ่ม";
-      return;
-    }
-
-    const student = cacheUsers.find(u => u.uid === studentUid && u.role === "student");
-    if (!student) { result.textContent = "⚠️ ไม่พบ studentUid นี้ใน users"; return; }
-    if (student.classId !== classId) { result.textContent = "⚠️ นักเรียนคนนี้ไม่ได้อยู่ใน Class ที่เลือก"; return; }
-
-    const sub = findSubmission(assignmentId, studentUid);
-    if (sub) {
-      result.innerHTML = `ℹ️ สถานะ: <b>ส่งแล้ว</b> • ${student.studentNo ?? "-"} . ${student.name || student.email} • ${fmtDateTime(sub.submittedAt)} (${sub.method || "-"})`;
-    } else {
-      const a = cacheAssignments.find(x=>x.id===assignmentId);
-      const lateFlag = a ? isLate(a) : false;
-      result.innerHTML = lateFlag
-        ? `พร้อมบันทึกส่ง: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b> (ตอนนี้เลยกำหนด)`
-        : `พร้อมบันทึกส่ง: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b>`;
-    }
-  };
-
-  // init
-  if (classSel.value) fillAssignments(classSel.value);
-  classSel.addEventListener("change", ()=>{
-    uidInput.value = "";
-    studentSel.innerHTML = `<option value="">-- เลือกนักเรียน --</option>`;
-    assignmentSel.innerHTML = `<option value="">-- เลือกงาน --</option>`;
-    fillAssignments(classSel.value);
-    statusList.textContent = "ยังไม่ได้เลือกงาน";
-    manualPreview();
-  });
-
-  assignmentSel.addEventListener("change", ()=>{
-    uidInput.value = "";
-    const { classId, assignmentId } = getSelected();
-    fillStudentsWithStatus(classId, assignmentId);
-    renderStatusTable(classId, assignmentId);
-    manualPreview();
-  });
-
-  studentSel.addEventListener("change", ()=>{ uidInput.value = ""; manualPreview(); });
-  uidInput.addEventListener("input", manualPreview);
-
-  $("reloadScanBtn").addEventListener("click", async ()=>{
-    await loadAssignmentsFor("teacher");
-    await loadSubmissionsFor("teacher");
-    await loadUsers();
-    await loadClasses();
-    renderTeacherScan(me);
-  });
-
-  $("startScanBtn").addEventListener("click", async ()=>{
-    const { classId, assignmentId } = getSelected();
-    if (!classId) return alert("เลือก Class ก่อน");
-    if (!assignmentId) return alert("เลือกงานก่อน");
-
-    scanner.classId = classId;
-    scanner.assignmentId = assignmentId;
-
-    await startScanner(me);
-  });
-
-  $("stopScanBtn").addEventListener("click", ()=>{
-    stopScanner();
-    $("stopScanBtn").disabled = true;
-    $("startScanBtn").disabled = false;
-    result.textContent = "หยุดสแกนแล้ว";
-  });
-
-  $("manualSubmitBtn").addEventListener("click", async ()=>{
-    try {
-      const { classId, assignmentId, studentUid } = getSelected();
-      if (!classId) throw new Error("เลือก Class ก่อน");
-      if (!assignmentId) throw new Error("เลือกงานก่อน");
-      if (!studentUid) throw new Error("เลือกนักเรียน หรือกรอก Student UID");
-
-      const student = cacheUsers.find(u => u.uid === studentUid && u.role === "student");
-      if (!student) throw new Error("ไม่พบ studentUid นี้ใน users (ตรวจ UID)");
-      if (student.classId !== classId) throw new Error("นักเรียนคนนี้ไม่ได้อยู่ใน Class ที่เลือก");
-
-      const sub = findSubmission(assignmentId, studentUid);
-      if (!sub) {
-        if (!confirm(`ยืนยันบันทึกส่ง (Manual)\n${student.studentNo ?? "-"} . ${student.name || student.email}`)) return;
-      }
+      const student = cacheUsers.find(u=>u.uid===uid);
+      if(!student) throw new Error("ไม่พบ user");
 
       await upsertSubmission({
         assignmentId,
-        studentUid,
+        studentUid: uid,
         classId,
-        method: "MANUAL",
+        method:"MANUAL",
         scannedBy: me.uid
       });
 
-      await loadSubmissionsFor("teacher");
-      result.innerHTML = `✅ Manual ส่งแล้ว: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b> เวลา ${fmtDateTime(Date.now())}`;
+      $("scanResult").innerHTML =
+        `✅ ส่งแล้ว (Manual): ${student.studentNo||""} ${student.name||student.email}`;
 
-      // refresh status UI
-      fillStudentsWithStatus(classId, assignmentId);
-      renderStatusTable(classId, assignmentId);
-    } catch (e) {
-      alert("❌ " + errMsg(e));
-    }
-  });
-
-  $("unsubmitBtn").addEventListener("click", async ()=>{
-    try {
-      const { classId, assignmentId, studentUid } = getSelected();
-      if (!classId) throw new Error("เลือก Class ก่อน");
-      if (!assignmentId) throw new Error("เลือกงานก่อน");
-      if (!studentUid) throw new Error("เลือกนักเรียน หรือกรอก Student UID");
-
-      const student = cacheUsers.find(u => u.uid === studentUid && u.role === "student");
-      if (!student) throw new Error("ไม่พบ studentUid นี้ใน users (ตรวจ UID)");
-      if (student.classId !== classId) throw new Error("นักเรียนคนนี้ไม่ได้อยู่ใน Class ที่เลือก");
-
-      const sub = findSubmission(assignmentId, studentUid);
-      if (!sub) {
-        alert("ℹ️ คนนี้ยังไม่มีสถานะส่ง (ไม่ต้องยกเลิก)");
-        return;
-      }
-
-      if (!confirm(`ยืนยัน “ยกเลิกส่ง”\n${student.studentNo ?? "-"} . ${student.name || student.email}\n(จะลบ submission ของงานนี้)`)) return;
-
-      await deleteSubmission(assignmentId, studentUid);
       await loadSubmissionsFor("teacher");
 
-      result.innerHTML = `✅ ยกเลิกส่งแล้ว: <b>${student.studentNo ?? "-"} . ${student.name || student.email}</b>`;
-
-      fillStudentsWithStatus(classId, assignmentId);
-      renderStatusTable(classId, assignmentId);
-    } catch (e) {
-      alert("❌ " + errMsg(e));
+    }catch(e){
+      alert("❌ "+errMsg(e));
     }
-  });
+  };
+
+  // =======================
+  // CANCEL SEND
+  // =======================
+  $("cancelSendBtn").onclick = async ()=>{
+    try{
+      const assignmentId = assignSel.value;
+      const uid = $("scan_uid").value.trim() || studentSel.value;
+
+      if(!assignmentId || !uid) throw new Error("เลือกงานและนักเรียนก่อน");
+
+      if(!confirm("ยกเลิกส่งงาน?")) return;
+
+      await deleteSubmission(assignmentId, uid);
+      $("scanResult").innerHTML = `❌ ยกเลิกส่งแล้ว`;
+
+      await loadSubmissionsFor("teacher");
+
+    }catch(e){
+      alert("❌ "+errMsg(e));
+    }
+  };
+
+  // =======================
+  // SCAN QR
+  // =======================
+  $("startScanBtn").onclick = async ()=>{
+    const classId = classSel.value;
+    const assignmentId = assignSel.value;
+    if(!classId || !assignmentId){
+      alert("เลือก class และงานก่อน");
+      return;
+    }
+    scanner.classId = classId;
+    scanner.assignmentId = assignmentId;
+    await startScanner(me);
+  };
+
+  $("stopScanBtn").onclick = ()=>stopScanner();
 }
+
 
 async function startScanner(me) {
   if (scanner.running) return;
